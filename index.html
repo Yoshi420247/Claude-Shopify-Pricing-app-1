@@ -1252,7 +1252,11 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
 
     // Step 2: Search and extract prices from competitor results
     async function searchCompetitors(product, productIdentity, settings, options = {}) {
-        if (!settings.braveKey) throw new Error('Brave API key not configured');
+        if (!settings.braveKey) {
+            console.error('Brave API key not configured!');
+            throw new Error('Brave API key not configured');
+        }
+        console.log(`Brave API key present: ${settings.braveKey.substring(0, 8)}...`);
 
         const isDeep = options.deep || false;
         const allResults = [];
@@ -1291,19 +1295,26 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
         const resultsPerQuery = isDeep ? 15 : 10;
 
         console.log(`[${isDeep ? 'DEEP' : 'Normal'}] Running ${queries.length} queries...`);
+        console.log(`Queries: ${queries.join(' | ')}`);
 
         // Search for results
         for (const query of queries) {
             try {
                 const retailQuery = `${query} -wholesale -bulk -distributor -alibaba -dhgate -ebay`;
 
+                console.log(`Searching: "${retailQuery.substring(0, 50)}..."`);
+
                 const res = await fetch(
                     `${CORS_PROXY}https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(retailQuery)}&count=${resultsPerQuery}`,
                     { headers: { 'X-Subscription-Token': settings.braveKey } }
                 );
 
+                console.log(`Search response status: ${res.status}`);
+
                 if (res.ok) {
                     const data = await res.json();
+                    const resultCount = data.web?.results?.length || 0;
+                    console.log(`  Got ${resultCount} results for "${query.substring(0, 30)}..."`);
                     for (const r of (data.web?.results || [])) {
                         if (!seenUrls.has(r.url)) {
                             seenUrls.add(r.url);
@@ -1311,10 +1322,11 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
                         }
                     }
                 } else {
-                    console.warn(`Search returned ${res.status} for "${query}"`);
+                    const errorText = await res.text();
+                    console.error(`Search returned ${res.status} for "${query}": ${errorText.substring(0, 200)}`);
                 }
             } catch (e) {
-                console.warn(`Search failed for "${query}":`, e);
+                console.error(`Search failed for "${query}":`, e);
             }
         }
 
