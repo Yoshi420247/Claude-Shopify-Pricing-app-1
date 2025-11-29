@@ -1,0 +1,1879 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oil Slick Pad Pricing Suite</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #1f2937; }
+        ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+
+        /* Animations */
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .animate-pulse-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        .animate-spin { animation: spin 1s linear infinite; }
+
+        /* Table row expansion */
+        .expanded-content { display: none; }
+        .expanded-content.open { display: table-row; }
+
+        /* Inline editable */
+        .editable:hover { background: #374151; cursor: pointer; }
+        .editable:focus { outline: 2px solid #3b82f6; background: #1f2937; }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'profit': '#22c55e',
+                        'loss': '#ef4444',
+                        'ai': '#3b82f6',
+                        'warning': '#eab308',
+                        'neutral': '#6b7280'
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <div id="app" class="flex h-screen">
+        <!-- Sidebar Navigation -->
+        <nav class="w-56 bg-gray-800 border-r border-gray-700 flex flex-col">
+            <div class="p-4 border-b border-gray-700">
+                <h1 class="text-lg font-semibold text-white">Oil Slick Pad</h1>
+                <p class="text-xs text-gray-400">Pricing Suite</p>
+            </div>
+            <div class="flex-1 py-4">
+                <a href="#" onclick="navigateTo('dashboard')" id="nav-dashboard" class="nav-link flex items-center px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-700 hover:text-white">
+                    <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+                    </svg>
+                    Dashboard
+                </a>
+                <a href="#" onclick="navigateTo('products')" id="nav-products" class="nav-link flex items-center px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-700 hover:text-white">
+                    <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/>
+                    </svg>
+                    Products
+                </a>
+                <a href="#" onclick="navigateTo('settings')" id="nav-settings" class="nav-link flex items-center px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-700 hover:text-white">
+                    <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                    </svg>
+                    Settings
+                </a>
+            </div>
+            <div class="p-4 border-t border-gray-700">
+                <div id="connection-status" class="text-xs text-gray-500">
+                    <span class="inline-block w-2 h-2 rounded-full bg-gray-500 mr-2"></span>
+                    Not configured
+                </div>
+            </div>
+        </nav>
+
+        <!-- Main Content Area -->
+        <main class="flex-1 overflow-hidden flex flex-col">
+            <!-- Dashboard Screen -->
+            <section id="screen-dashboard" class="screen flex-1 overflow-auto p-6 hidden">
+                <div class="max-w-7xl mx-auto">
+                    <h2 class="text-2xl font-semibold mb-6">Dashboard</h2>
+
+                    <!-- Health Metrics -->
+                    <div class="grid grid-cols-4 gap-4 mb-6">
+                        <div onclick="navigateTo('products')" class="bg-gray-800 border border-gray-700 rounded-lg p-4 cursor-pointer hover:border-gray-600">
+                            <p class="text-sm text-gray-400 mb-1">Total Products</p>
+                            <p id="metric-total" class="text-2xl font-semibold">—</p>
+                        </div>
+                        <div onclick="navigateTo('products'); applyFilter('sort', 'margin-asc')" class="bg-gray-800 border border-gray-700 rounded-lg p-4 cursor-pointer hover:border-gray-600">
+                            <p class="text-sm text-gray-400 mb-1">Average Margin</p>
+                            <p id="metric-margin" class="text-2xl font-semibold">—</p>
+                        </div>
+                        <div onclick="navigateTo('products'); applyFilter('status', 'Needs Analysis')" class="bg-gray-800 border border-gray-700 rounded-lg p-4 cursor-pointer hover:border-gray-600">
+                            <p class="text-sm text-gray-400 mb-1">Analyzed</p>
+                            <p id="metric-analyzed" class="text-2xl font-semibold">—</p>
+                            <p id="metric-analyzed-pct" class="text-xs text-gray-500"></p>
+                        </div>
+                        <div onclick="navigateTo('products'); applyFilter('status', 'Has Suggestion')" class="bg-gray-800 border border-gray-700 rounded-lg p-4 cursor-pointer hover:border-gray-600">
+                            <p class="text-sm text-gray-400 mb-1">Pending Updates</p>
+                            <p id="metric-pending" class="text-2xl font-semibold text-ai">—</p>
+                        </div>
+                    </div>
+
+                    <!-- Action Cards -->
+                    <div id="action-cards" class="grid grid-cols-2 gap-4 mb-6">
+                        <!-- Dynamic action cards will be inserted here -->
+                    </div>
+
+                    <!-- Recent Activity -->
+                    <div class="bg-gray-800 border border-gray-700 rounded-lg">
+                        <div class="px-4 py-3 border-b border-gray-700">
+                            <h3 class="font-medium">Recent Activity</h3>
+                        </div>
+                        <div id="activity-feed" class="p-4 max-h-64 overflow-auto">
+                            <p class="text-sm text-gray-500">No recent activity</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Products Screen -->
+            <section id="screen-products" class="screen flex-1 overflow-hidden flex flex-col hidden">
+                <!-- Filter Bar -->
+                <div class="bg-gray-800 border-b border-gray-700 p-4 flex items-center gap-4 flex-wrap">
+                    <div class="flex-1 min-w-[200px] max-w-md">
+                        <input type="text" id="search-input" placeholder="Search products, SKUs, vendors..."
+                            class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+                    </div>
+                    <select id="filter-status" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
+                        <option value="">All Status</option>
+                        <option value="Needs Analysis">Needs Analysis</option>
+                        <option value="Has Suggestion">Has Suggestion</option>
+                        <option value="Updated">Updated</option>
+                        <option value="Failed">Failed</option>
+                        <option value="Negative Margin">Negative Margin</option>
+                        <option value="Below Floor">Below Floor</option>
+                        <option value="Missing Cost">Missing Cost</option>
+                    </select>
+                    <select id="filter-margin" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
+                        <option value="">All Margins</option>
+                        <option value="negative">Negative (&lt;0%)</option>
+                        <option value="low">Low (0-15%)</option>
+                        <option value="target">Target (15-30%)</option>
+                        <option value="high">High (&gt;30%)</option>
+                    </select>
+                    <select id="filter-vendor" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
+                        <option value="">All Vendors</option>
+                    </select>
+                    <select id="filter-sort" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
+                        <option value="name-asc">Name A-Z</option>
+                        <option value="name-desc">Name Z-A</option>
+                        <option value="price-asc">Price: Low to High</option>
+                        <option value="price-desc">Price: High to Low</option>
+                        <option value="margin-asc">Margin: Low to High</option>
+                        <option value="margin-desc">Margin: High to Low</option>
+                        <option value="analyzed-desc">Last Analyzed</option>
+                    </select>
+                    <button onclick="analyzeVisible()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/>
+                        </svg>
+                        Analyze All Visible
+                    </button>
+                    <button onclick="exportCSV()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                        </svg>
+                        Export CSV
+                    </button>
+                </div>
+
+                <!-- Product Table -->
+                <div class="flex-1 overflow-auto">
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-800 sticky top-0">
+                            <tr class="border-b border-gray-700">
+                                <th class="w-10 px-4 py-3 text-left">
+                                    <input type="checkbox" id="select-all" class="rounded bg-gray-700 border-gray-600">
+                                </th>
+                                <th class="px-4 py-3 text-left font-medium text-gray-400">Product</th>
+                                <th class="w-28 px-4 py-3 text-left font-medium text-gray-400">SKU</th>
+                                <th class="w-24 px-4 py-3 text-right font-medium text-gray-400">Price</th>
+                                <th class="w-24 px-4 py-3 text-right font-medium text-gray-400">Cost</th>
+                                <th class="w-20 px-4 py-3 text-right font-medium text-gray-400">Margin</th>
+                                <th class="w-28 px-4 py-3 text-right font-medium text-gray-400">Suggested</th>
+                                <th class="w-24 px-4 py-3 text-center font-medium text-gray-400">Status</th>
+                                <th class="w-36 px-4 py-3 text-center font-medium text-gray-400">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="product-table-body">
+                            <!-- Products will be dynamically inserted here -->
+                        </tbody>
+                    </table>
+                    <div id="empty-state" class="hidden p-8 text-center text-gray-500">
+                        <svg class="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+                        </svg>
+                        <p class="text-lg mb-2">No products loaded</p>
+                        <p class="text-sm">Configure your Shopify API in Settings to get started</p>
+                    </div>
+                </div>
+
+                <!-- Pagination -->
+                <div class="bg-gray-800 border-t border-gray-700 px-4 py-3 flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <span class="text-sm text-gray-400">Show</span>
+                        <select id="page-size" class="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm">
+                            <option value="25">25</option>
+                            <option value="50" selected>50</option>
+                            <option value="100">100</option>
+                            <option value="250">250</option>
+                        </select>
+                        <span class="text-sm text-gray-400">per page</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button id="prev-page" class="px-3 py-1 bg-gray-700 rounded text-sm disabled:opacity-50" disabled>Previous</button>
+                        <span id="page-info" class="text-sm text-gray-400">Page 1 of 1</span>
+                        <button id="next-page" class="px-3 py-1 bg-gray-700 rounded text-sm disabled:opacity-50" disabled>Next</button>
+                    </div>
+                    <div class="text-sm text-gray-400">
+                        <span id="showing-count">0</span> products
+                    </div>
+                </div>
+
+                <!-- Bulk Action Bar -->
+                <div id="bulk-action-bar" class="hidden bg-gray-800 border-t border-blue-500 px-4 py-3 flex items-center justify-between">
+                    <span id="selected-count" class="text-sm font-medium">0 products selected</span>
+                    <div class="flex items-center gap-3">
+                        <button onclick="analyzeSelected()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/>
+                            </svg>
+                            Analyze Selected
+                        </button>
+                        <button id="accept-all-btn" onclick="acceptAllSelected()" class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded text-sm flex items-center gap-2 disabled:opacity-50" disabled>
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                            </svg>
+                            Accept All Suggestions
+                        </button>
+                        <button id="stop-btn" onclick="stopProcessing()" class="hidden bg-red-600 hover:bg-red-700 px-4 py-2 rounded text-sm flex items-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"/>
+                            </svg>
+                            Stop
+                        </button>
+                    </div>
+                    <button onclick="deselectAll()" class="text-sm text-gray-400 hover:text-white">Deselect All</button>
+                </div>
+            </section>
+
+            <!-- Settings Screen -->
+            <section id="screen-settings" class="screen flex-1 overflow-auto p-6 hidden">
+                <div class="max-w-3xl mx-auto">
+                    <h2 class="text-2xl font-semibold mb-6">Settings</h2>
+
+                    <!-- API Connections -->
+                    <div class="bg-gray-800 border border-gray-700 rounded-lg mb-6">
+                        <div class="px-4 py-3 border-b border-gray-700">
+                            <h3 class="font-medium">API Connections</h3>
+                        </div>
+                        <div class="p-4 space-y-4">
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">Shopify Store Name</label>
+                                <div class="flex items-center gap-2">
+                                    <input type="text" id="shopify-store" value="oil-slick-pad"
+                                        class="flex-1 bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm" readonly>
+                                    <span class="text-gray-400">.myshopify.com</span>
+                                </div>
+                                <p class="text-xs text-gray-500 mt-1">Pre-filled for your store</p>
+                            </div>
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">Shopify Admin API Token</label>
+                                <input type="text" id="shopify-token" placeholder="shpat_xxxxx"
+                                    class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
+                                <p class="text-xs text-gray-500 mt-1">Requires read_products, write_products, read_inventory scopes</p>
+                            </div>
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">OpenAI API Key</label>
+                                <input type="text" id="openai-key" placeholder="sk-xxxxx"
+                                    class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
+                                <p class="text-xs text-gray-500 mt-1">Will use GPT-4o or latest available model</p>
+                            </div>
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">Brave Search API Key</label>
+                                <input type="text" id="brave-key" placeholder="BSAxxxxx"
+                                    class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
+                            </div>
+                            <div class="flex gap-3 pt-2">
+                                <button onclick="testConnections()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm">
+                                    Test Connections
+                                </button>
+                                <button onclick="saveSettings()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm">
+                                    Save
+                                </button>
+                            </div>
+                            <div id="connection-results" class="hidden space-y-2 pt-2"></div>
+                        </div>
+                    </div>
+
+                    <!-- Pricing Rules -->
+                    <div class="bg-gray-800 border border-gray-700 rounded-lg mb-6">
+                        <div class="px-4 py-3 border-b border-gray-700">
+                            <h3 class="font-medium">Pricing Rules</h3>
+                            <p class="text-xs text-gray-500">The AI will use these as guardrails</p>
+                        </div>
+                        <div class="p-4 space-y-6">
+                            <!-- Margin Floors -->
+                            <div>
+                                <h4 class="text-sm font-medium text-gray-300 mb-3">Margin Floors</h4>
+                                <div class="space-y-4">
+                                    <div>
+                                        <div class="flex justify-between text-sm mb-1">
+                                            <label class="text-gray-400">Minimum Margin %</label>
+                                            <span id="min-margin-value" class="text-white">20%</span>
+                                        </div>
+                                        <input type="range" id="min-margin" min="0" max="50" value="20"
+                                            class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm text-gray-400 mb-1">Minimum Margin $</label>
+                                        <input type="number" id="min-margin-dollars" value="3.00" step="0.50" min="0"
+                                            class="w-32 bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
+                                    </div>
+                                    <div>
+                                        <div class="flex justify-between text-sm mb-1">
+                                            <label class="text-gray-400">Clearance Minimum Margin %</label>
+                                            <span id="clearance-margin-value" class="text-white">5%</span>
+                                        </div>
+                                        <input type="range" id="clearance-margin" min="0" max="20" value="5"
+                                            class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Price Ceilings -->
+                            <div>
+                                <h4 class="text-sm font-medium text-gray-300 mb-3">Price Ceilings</h4>
+                                <div class="space-y-4">
+                                    <div class="flex items-center justify-between">
+                                        <label class="text-sm text-gray-400">Never exceed MSRP</label>
+                                        <button id="respect-msrp" onclick="toggleSwitch(this)"
+                                            class="relative w-11 h-6 bg-blue-600 rounded-full transition-colors" data-enabled="true">
+                                            <span class="absolute left-5 top-0.5 w-5 h-5 bg-white rounded-full transition-transform"></span>
+                                        </button>
+                                    </div>
+                                    <div>
+                                        <div class="flex justify-between text-sm mb-1">
+                                            <label class="text-gray-400">Max % above highest competitor</label>
+                                            <span id="max-above-value" class="text-white">5%</span>
+                                        </div>
+                                        <input type="range" id="max-above" min="0" max="25" value="5"
+                                            class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Price Change Governance -->
+                            <div>
+                                <h4 class="text-sm font-medium text-gray-300 mb-3">Price Change Governance</h4>
+                                <div class="space-y-4">
+                                    <div>
+                                        <div class="flex justify-between text-sm mb-1">
+                                            <label class="text-gray-400">Max single increase %</label>
+                                            <span id="max-increase-value" class="text-white">10%</span>
+                                        </div>
+                                        <input type="range" id="max-increase" min="1" max="25" value="10"
+                                            class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                                    </div>
+                                    <div>
+                                        <div class="flex justify-between text-sm mb-1">
+                                            <label class="text-gray-400">Max single decrease %</label>
+                                            <span id="max-decrease-value" class="text-white">15%</span>
+                                        </div>
+                                        <input type="range" id="max-decrease" min="1" max="30" value="15"
+                                            class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Rounding -->
+                            <div>
+                                <h4 class="text-sm font-medium text-gray-300 mb-3">Rounding</h4>
+                                <select id="rounding-style" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
+                                    <option value="psychological">Psychological (.99 endings)</option>
+                                    <option value="clean">Clean (.00 endings)</option>
+                                    <option value="none">No rounding</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Store Context -->
+                    <div class="bg-gray-800 border border-gray-700 rounded-lg mb-6">
+                        <div class="px-4 py-3 border-b border-gray-700">
+                            <h3 class="font-medium">Store Context</h3>
+                        </div>
+                        <div class="p-4">
+                            <label class="block text-sm text-gray-400 mb-1">Product Niche & Context</label>
+                            <textarea id="product-niche" rows="3" placeholder="e.g., Heady glass, American-made dab tools, concentrate accessories..."
+                                class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm"></textarea>
+                            <p class="text-xs text-gray-500 mt-1">The AI uses this to generate better search queries and evaluate competitor relevance</p>
+                        </div>
+                    </div>
+
+                    <!-- Processing Settings -->
+                    <div class="bg-gray-800 border border-gray-700 rounded-lg">
+                        <div class="px-4 py-3 border-b border-gray-700">
+                            <h3 class="font-medium">Processing Settings</h3>
+                        </div>
+                        <div class="p-4 space-y-4">
+                            <div>
+                                <div class="flex justify-between text-sm mb-1">
+                                    <label class="text-gray-400">Parallel Operations</label>
+                                    <span id="concurrency-value" class="text-white">20</span>
+                                </div>
+                                <input type="range" id="concurrency" min="1" max="30" value="20"
+                                    class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                                <p class="text-xs text-gray-500 mt-1">Shopify Plus allows higher limits</p>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <label class="text-sm text-gray-400">Auto-save analysis results</label>
+                                <button id="auto-save" onclick="toggleSwitch(this)"
+                                    class="relative w-11 h-6 bg-blue-600 rounded-full transition-colors" data-enabled="true">
+                                    <span class="absolute left-5 top-0.5 w-5 h-5 bg-white rounded-full transition-transform"></span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mt-6 flex gap-3">
+                        <button onclick="saveSettings()" class="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded text-sm font-medium">
+                            Save All Settings
+                        </button>
+                        <button onclick="loadProducts()" class="bg-gray-700 hover:bg-gray-600 px-6 py-2 rounded text-sm font-medium">
+                            Refresh Products
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Expanded Product Detail Modal -->
+    <div id="product-modal" class="hidden fixed inset-0 bg-black/50 z-50 overflow-auto">
+        <div class="min-h-screen flex items-start justify-center p-4 pt-20">
+            <div class="bg-gray-800 border border-gray-700 rounded-lg w-full max-w-4xl">
+                <div class="flex items-center justify-between px-6 py-4 border-b border-gray-700">
+                    <h3 id="modal-product-title" class="text-lg font-medium">Product Details</h3>
+                    <button onclick="closeModal()" class="text-gray-400 hover:text-white">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+                <div id="modal-content" class="p-6">
+                    <!-- Dynamic content -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toast-container" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
+
+    <script>
+    // ============================================================================
+    // STATE MANAGEMENT
+    // ============================================================================
+    const state = {
+        products: [],
+        filteredProducts: [],
+        selectedProducts: new Set(),
+        currentPage: 1,
+        pageSize: 50,
+        processing: false,
+        stopRequested: false,
+        activityLog: [],
+        analysisCache: {} // productId -> analysis result
+    };
+
+    // ============================================================================
+    // SETTINGS MANAGEMENT
+    // ============================================================================
+    function loadSettings() {
+        const settings = JSON.parse(localStorage.getItem('oilslick_settings') || '{}');
+
+        // API Keys
+        document.getElementById('shopify-token').value = settings.shopifyToken || '';
+        document.getElementById('openai-key').value = settings.openaiKey || '';
+        document.getElementById('brave-key').value = settings.braveKey || '';
+
+        // Pricing Rules
+        if (settings.minMargin !== undefined) {
+            document.getElementById('min-margin').value = settings.minMargin;
+            document.getElementById('min-margin-value').textContent = settings.minMargin + '%';
+        }
+        if (settings.minMarginDollars !== undefined) {
+            document.getElementById('min-margin-dollars').value = settings.minMarginDollars;
+        }
+        if (settings.clearanceMargin !== undefined) {
+            document.getElementById('clearance-margin').value = settings.clearanceMargin;
+            document.getElementById('clearance-margin-value').textContent = settings.clearanceMargin + '%';
+        }
+        if (settings.respectMsrp !== undefined) {
+            const btn = document.getElementById('respect-msrp');
+            btn.dataset.enabled = settings.respectMsrp;
+            updateSwitchVisual(btn);
+        }
+        if (settings.maxAbove !== undefined) {
+            document.getElementById('max-above').value = settings.maxAbove;
+            document.getElementById('max-above-value').textContent = settings.maxAbove + '%';
+        }
+        if (settings.maxIncrease !== undefined) {
+            document.getElementById('max-increase').value = settings.maxIncrease;
+            document.getElementById('max-increase-value').textContent = settings.maxIncrease + '%';
+        }
+        if (settings.maxDecrease !== undefined) {
+            document.getElementById('max-decrease').value = settings.maxDecrease;
+            document.getElementById('max-decrease-value').textContent = settings.maxDecrease + '%';
+        }
+        if (settings.roundingStyle) {
+            document.getElementById('rounding-style').value = settings.roundingStyle;
+        }
+        if (settings.productNiche) {
+            document.getElementById('product-niche').value = settings.productNiche;
+        }
+        if (settings.concurrency !== undefined) {
+            document.getElementById('concurrency').value = settings.concurrency;
+            document.getElementById('concurrency-value').textContent = settings.concurrency;
+        }
+        if (settings.autoSave !== undefined) {
+            const btn = document.getElementById('auto-save');
+            btn.dataset.enabled = settings.autoSave;
+            updateSwitchVisual(btn);
+        }
+
+        // Load cached data
+        state.products = JSON.parse(localStorage.getItem('oilslick_products') || '[]');
+        state.analysisCache = JSON.parse(localStorage.getItem('oilslick_analysis') || '{}');
+        state.activityLog = JSON.parse(localStorage.getItem('oilslick_activity') || '[]');
+
+        updateConnectionStatus();
+    }
+
+    function saveSettings() {
+        const settings = {
+            shopifyToken: document.getElementById('shopify-token').value,
+            openaiKey: document.getElementById('openai-key').value,
+            braveKey: document.getElementById('brave-key').value,
+            minMargin: parseInt(document.getElementById('min-margin').value),
+            minMarginDollars: parseFloat(document.getElementById('min-margin-dollars').value),
+            clearanceMargin: parseInt(document.getElementById('clearance-margin').value),
+            respectMsrp: document.getElementById('respect-msrp').dataset.enabled === 'true',
+            maxAbove: parseInt(document.getElementById('max-above').value),
+            maxIncrease: parseInt(document.getElementById('max-increase').value),
+            maxDecrease: parseInt(document.getElementById('max-decrease').value),
+            roundingStyle: document.getElementById('rounding-style').value,
+            productNiche: document.getElementById('product-niche').value,
+            concurrency: parseInt(document.getElementById('concurrency').value),
+            autoSave: document.getElementById('auto-save').dataset.enabled === 'true'
+        };
+
+        localStorage.setItem('oilslick_settings', JSON.stringify(settings));
+        showToast('Settings saved', 'success');
+        updateConnectionStatus();
+    }
+
+    function getSettings() {
+        return JSON.parse(localStorage.getItem('oilslick_settings') || '{}');
+    }
+
+    function updateConnectionStatus() {
+        const settings = getSettings();
+        const statusEl = document.getElementById('connection-status');
+
+        if (settings.shopifyToken && settings.openaiKey && settings.braveKey) {
+            statusEl.innerHTML = '<span class="inline-block w-2 h-2 rounded-full bg-green-500 mr-2"></span>Connected';
+        } else if (settings.shopifyToken || settings.openaiKey || settings.braveKey) {
+            statusEl.innerHTML = '<span class="inline-block w-2 h-2 rounded-full bg-yellow-500 mr-2"></span>Partially configured';
+        } else {
+            statusEl.innerHTML = '<span class="inline-block w-2 h-2 rounded-full bg-gray-500 mr-2"></span>Not configured';
+        }
+    }
+
+    // ============================================================================
+    // NAVIGATION
+    // ============================================================================
+    function navigateTo(screen) {
+        document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+        document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('bg-gray-700', 'text-white'));
+
+        document.getElementById(`screen-${screen}`).classList.remove('hidden');
+        document.getElementById(`nav-${screen}`).classList.add('bg-gray-700', 'text-white');
+
+        if (screen === 'dashboard') {
+            updateDashboard();
+        } else if (screen === 'products') {
+            renderProducts();
+        }
+    }
+
+    // ============================================================================
+    // API INTEGRATIONS
+    // ============================================================================
+    const CORS_PROXY = 'https://corsproxy.io/?';
+
+    async function testConnections() {
+        const resultsEl = document.getElementById('connection-results');
+        resultsEl.classList.remove('hidden');
+        resultsEl.innerHTML = '<p class="text-sm text-gray-400">Testing connections...</p>';
+
+        const results = [];
+
+        // Test Shopify
+        const shopifyToken = document.getElementById('shopify-token').value;
+        if (shopifyToken) {
+            try {
+                const res = await fetch(`${CORS_PROXY}https://oil-slick-pad.myshopify.com/admin/api/2024-01/shop.json`, {
+                    headers: { 'X-Shopify-Access-Token': shopifyToken }
+                });
+                if (res.ok) {
+                    results.push({ name: 'Shopify', status: 'success', message: 'Connected' });
+                } else {
+                    results.push({ name: 'Shopify', status: 'error', message: `Error: ${res.status}` });
+                }
+            } catch (e) {
+                results.push({ name: 'Shopify', status: 'error', message: e.message });
+            }
+        } else {
+            results.push({ name: 'Shopify', status: 'warning', message: 'No token provided' });
+        }
+
+        // Test OpenAI
+        const openaiKey = document.getElementById('openai-key').value;
+        if (openaiKey) {
+            try {
+                const res = await fetch('https://api.openai.com/v1/models', {
+                    headers: { 'Authorization': `Bearer ${openaiKey}` }
+                });
+                if (res.ok) {
+                    results.push({ name: 'OpenAI', status: 'success', message: 'Connected' });
+                } else {
+                    results.push({ name: 'OpenAI', status: 'error', message: `Error: ${res.status}` });
+                }
+            } catch (e) {
+                results.push({ name: 'OpenAI', status: 'error', message: e.message });
+            }
+        } else {
+            results.push({ name: 'OpenAI', status: 'warning', message: 'No key provided' });
+        }
+
+        // Test Brave
+        const braveKey = document.getElementById('brave-key').value;
+        if (braveKey) {
+            try {
+                const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=test&count=1`, {
+                    headers: { 'X-Subscription-Token': braveKey }
+                });
+                if (res.ok) {
+                    results.push({ name: 'Brave Search', status: 'success', message: 'Connected' });
+                } else {
+                    results.push({ name: 'Brave Search', status: 'error', message: `Error: ${res.status}` });
+                }
+            } catch (e) {
+                results.push({ name: 'Brave Search', status: 'error', message: e.message });
+            }
+        } else {
+            results.push({ name: 'Brave Search', status: 'warning', message: 'No key provided' });
+        }
+
+        resultsEl.innerHTML = results.map(r => {
+            const color = r.status === 'success' ? 'text-green-400' : r.status === 'error' ? 'text-red-400' : 'text-yellow-400';
+            const icon = r.status === 'success' ? '✓' : r.status === 'error' ? '✗' : '!';
+            return `<p class="text-sm ${color}">${icon} ${r.name}: ${r.message}</p>`;
+        }).join('');
+    }
+
+    async function loadProducts() {
+        const settings = getSettings();
+        if (!settings.shopifyToken) {
+            showToast('Please configure Shopify API token first', 'error');
+            return;
+        }
+
+        showToast('Loading products...', 'info');
+
+        try {
+            let allProducts = [];
+            let url = `${CORS_PROXY}https://oil-slick-pad.myshopify.com/admin/api/2024-01/products.json?limit=250`;
+
+            while (url) {
+                const res = await fetch(url, {
+                    headers: { 'X-Shopify-Access-Token': settings.shopifyToken }
+                });
+
+                if (!res.ok) throw new Error(`Shopify API error: ${res.status}`);
+
+                const data = await res.json();
+                allProducts = allProducts.concat(data.products);
+
+                // Check for pagination
+                const linkHeader = res.headers.get('Link');
+                if (linkHeader && linkHeader.includes('rel="next"')) {
+                    const match = linkHeader.match(/<([^>]+)>; rel="next"/);
+                    url = match ? CORS_PROXY + match[1] : null;
+                } else {
+                    url = null;
+                }
+            }
+
+            // Process products
+            state.products = allProducts.map(p => ({
+                id: p.id,
+                title: p.title,
+                vendor: p.vendor,
+                productType: p.product_type,
+                handle: p.handle,
+                variants: p.variants.map(v => ({
+                    id: v.id,
+                    title: v.title,
+                    sku: v.sku,
+                    price: parseFloat(v.price),
+                    compareAtPrice: v.compare_at_price ? parseFloat(v.compare_at_price) : null,
+                    cost: null, // Will need inventory item lookup for cost
+                    inventoryItemId: v.inventory_item_id
+                })),
+                image: p.image?.src || null,
+                tags: p.tags,
+                status: p.status
+            }));
+
+            // Try to get costs from inventory
+            await loadInventoryCosts();
+
+            localStorage.setItem('oilslick_products', JSON.stringify(state.products));
+
+            showToast(`Loaded ${state.products.length} products`, 'success');
+            logActivity(`Loaded ${state.products.length} products from Shopify`);
+
+            populateFilters();
+            renderProducts();
+            updateDashboard();
+
+        } catch (e) {
+            console.error('Load products error:', e);
+            showToast('Failed to load products: ' + e.message, 'error');
+        }
+    }
+
+    async function loadInventoryCosts() {
+        const settings = getSettings();
+
+        for (const product of state.products) {
+            for (const variant of product.variants) {
+                if (variant.inventoryItemId) {
+                    try {
+                        const res = await fetch(
+                            `${CORS_PROXY}https://oil-slick-pad.myshopify.com/admin/api/2024-01/inventory_items/${variant.inventoryItemId}.json`,
+                            { headers: { 'X-Shopify-Access-Token': settings.shopifyToken } }
+                        );
+                        if (res.ok) {
+                            const data = await res.json();
+                            variant.cost = data.inventory_item.cost ? parseFloat(data.inventory_item.cost) : null;
+                        }
+                    } catch (e) {
+                        console.warn('Could not load cost for variant', variant.id);
+                    }
+                }
+            }
+        }
+    }
+
+    async function updateProductPrice(productId, variantId, newPrice) {
+        const settings = getSettings();
+
+        try {
+            const res = await fetch(
+                `${CORS_PROXY}https://oil-slick-pad.myshopify.com/admin/api/2024-01/variants/${variantId}.json`,
+                {
+                    method: 'PUT',
+                    headers: {
+                        'X-Shopify-Access-Token': settings.shopifyToken,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        variant: { id: variantId, price: newPrice.toFixed(2) }
+                    })
+                }
+            );
+
+            if (!res.ok) throw new Error(`Update failed: ${res.status}`);
+
+            // Update local state
+            const product = state.products.find(p => p.id === productId);
+            if (product) {
+                const variant = product.variants.find(v => v.id === variantId);
+                if (variant) {
+                    const oldPrice = variant.price;
+                    variant.price = newPrice;
+                    logActivity(`Price updated: ${product.title} $${oldPrice.toFixed(2)} → $${newPrice.toFixed(2)}`);
+                }
+            }
+
+            localStorage.setItem('oilslick_products', JSON.stringify(state.products));
+            return true;
+
+        } catch (e) {
+            console.error('Update price error:', e);
+            throw e;
+        }
+    }
+
+    async function searchCompetitors(productTitle, productType, niche) {
+        const settings = getSettings();
+        if (!settings.braveKey) throw new Error('Brave API key not configured');
+
+        // Build search query
+        const searchQuery = `${productTitle} price buy -site:oil-slick-pad.com`;
+
+        const res = await fetch(
+            `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(searchQuery)}&count=20`,
+            { headers: { 'X-Subscription-Token': settings.braveKey } }
+        );
+
+        if (!res.ok) throw new Error(`Brave search error: ${res.status}`);
+
+        const data = await res.json();
+        return data.web?.results || [];
+    }
+
+    async function analyzeWithAI(product, competitorData, settings) {
+        if (!settings.openaiKey) throw new Error('OpenAI API key not configured');
+
+        const variant = product.variants[0]; // Primary variant
+        const cost = variant.cost || 0;
+        const currentPrice = variant.price;
+
+        const systemPrompt = `You are a pricing analyst for an online smoke shop called Oil Slick Pad that sells heady glass, dab tools, and concentrate accessories.
+${settings.productNiche ? `Store context: ${settings.productNiche}` : ''}
+
+Your task is to analyze competitor pricing and recommend an optimal price for a product.
+
+Pricing Rules:
+- Minimum margin: ${settings.minMargin || 20}% or $${settings.minMarginDollars || 3}
+- Clearance minimum margin: ${settings.clearanceMargin || 5}%
+- ${settings.respectMsrp ? 'Never exceed MSRP' : 'May exceed MSRP if justified'}
+- Max ${settings.maxAbove || 5}% above highest competitor
+- Max price increase: ${settings.maxIncrease || 10}%
+- Max price decrease: ${settings.maxDecrease || 15}%
+- Rounding style: ${settings.roundingStyle || 'psychological'}
+
+Respond in JSON format only:
+{
+  "suggestedPrice": number,
+  "confidence": "high" | "medium" | "low",
+  "confidenceReason": "string",
+  "summary": "string (1-2 sentences explaining the recommendation)",
+  "reasoning": ["array", "of", "reasoning", "steps"],
+  "competitorAnalysis": {
+    "kept": [{"source": "string", "price": number, "reason": "string"}],
+    "excluded": [{"source": "string", "reason": "string"}],
+    "low": number | null,
+    "median": number | null,
+    "high": number | null
+  },
+  "priceFloor": number,
+  "priceCeiling": number
+}`;
+
+        const userPrompt = `Analyze pricing for:
+Product: ${product.title}
+Type: ${product.productType || 'Unknown'}
+Vendor: ${product.vendor || 'Unknown'}
+Current Price: $${currentPrice.toFixed(2)}
+Cost: ${cost > 0 ? '$' + cost.toFixed(2) : 'Unknown'}
+${variant.compareAtPrice ? `MSRP/Compare At: $${variant.compareAtPrice.toFixed(2)}` : ''}
+
+Competitor search results:
+${competitorData.map(c => `- ${c.title}: ${c.url}`).join('\n') || 'No competitors found'}
+
+Analyze the competitors, filter out irrelevant results (marketplace listings, out of stock, different products), and provide a pricing recommendation.`;
+
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${settings.openaiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: 'gpt-4o',
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: userPrompt }
+                ],
+                temperature: 0.3,
+                response_format: { type: 'json_object' }
+            })
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error?.message || `OpenAI error: ${res.status}`);
+        }
+
+        const data = await res.json();
+        const analysis = JSON.parse(data.choices[0].message.content);
+
+        return {
+            ...analysis,
+            searchQuery: `${product.title} price buy`,
+            analyzedAt: new Date().toISOString()
+        };
+    }
+
+    // ============================================================================
+    // PRODUCT TABLE RENDERING
+    // ============================================================================
+    function populateFilters() {
+        const vendors = [...new Set(state.products.map(p => p.vendor).filter(Boolean))];
+        const types = [...new Set(state.products.map(p => p.productType).filter(Boolean))];
+
+        const vendorSelect = document.getElementById('filter-vendor');
+        vendorSelect.innerHTML = '<option value="">All Vendors</option>' +
+            vendors.map(v => `<option value="${v}">${v}</option>`).join('');
+    }
+
+    function filterProducts() {
+        const search = document.getElementById('search-input').value.toLowerCase();
+        const status = document.getElementById('filter-status').value;
+        const margin = document.getElementById('filter-margin').value;
+        const vendor = document.getElementById('filter-vendor').value;
+        const sort = document.getElementById('filter-sort').value;
+
+        let filtered = [...state.products];
+
+        // Search filter
+        if (search) {
+            filtered = filtered.filter(p =>
+                p.title.toLowerCase().includes(search) ||
+                p.vendor?.toLowerCase().includes(search) ||
+                p.variants.some(v => v.sku?.toLowerCase().includes(search))
+            );
+        }
+
+        // Vendor filter
+        if (vendor) {
+            filtered = filtered.filter(p => p.vendor === vendor);
+        }
+
+        // Status filter
+        if (status) {
+            filtered = filtered.filter(p => {
+                const analysis = state.analysisCache[p.id];
+                const variant = p.variants[0];
+                const marginPct = variant.cost ? ((variant.price - variant.cost) / variant.price) * 100 : null;
+
+                switch (status) {
+                    case 'Needs Analysis': return !analysis;
+                    case 'Has Suggestion': return analysis && !analysis.applied;
+                    case 'Updated': return analysis && analysis.applied;
+                    case 'Failed': return analysis && analysis.error;
+                    case 'Negative Margin': return marginPct !== null && marginPct < 0;
+                    case 'Below Floor': return marginPct !== null && marginPct < (getSettings().minMargin || 20);
+                    case 'Missing Cost': return !variant.cost;
+                    default: return true;
+                }
+            });
+        }
+
+        // Margin filter
+        if (margin) {
+            filtered = filtered.filter(p => {
+                const variant = p.variants[0];
+                if (!variant.cost) return margin === 'missing';
+                const marginPct = ((variant.price - variant.cost) / variant.price) * 100;
+                switch (margin) {
+                    case 'negative': return marginPct < 0;
+                    case 'low': return marginPct >= 0 && marginPct < 15;
+                    case 'target': return marginPct >= 15 && marginPct <= 30;
+                    case 'high': return marginPct > 30;
+                    default: return true;
+                }
+            });
+        }
+
+        // Sorting
+        filtered.sort((a, b) => {
+            const av = a.variants[0], bv = b.variants[0];
+            switch (sort) {
+                case 'name-asc': return a.title.localeCompare(b.title);
+                case 'name-desc': return b.title.localeCompare(a.title);
+                case 'price-asc': return av.price - bv.price;
+                case 'price-desc': return bv.price - av.price;
+                case 'margin-asc':
+                    const am = av.cost ? (av.price - av.cost) / av.price : -999;
+                    const bm = bv.cost ? (bv.price - bv.cost) / bv.price : -999;
+                    return am - bm;
+                case 'margin-desc':
+                    const am2 = av.cost ? (av.price - av.cost) / av.price : -999;
+                    const bm2 = bv.cost ? (bv.price - bv.cost) / bv.price : -999;
+                    return bm2 - am2;
+                case 'analyzed-desc':
+                    const aa = state.analysisCache[a.id]?.analyzedAt || '';
+                    const ba = state.analysisCache[b.id]?.analyzedAt || '';
+                    return ba.localeCompare(aa);
+                default: return 0;
+            }
+        });
+
+        state.filteredProducts = filtered;
+        state.currentPage = 1;
+        renderProducts();
+    }
+
+    function renderProducts() {
+        const tbody = document.getElementById('product-table-body');
+        const emptyState = document.getElementById('empty-state');
+
+        if (state.products.length === 0) {
+            tbody.innerHTML = '';
+            emptyState.classList.remove('hidden');
+            document.getElementById('showing-count').textContent = '0';
+            return;
+        }
+
+        emptyState.classList.add('hidden');
+
+        const start = (state.currentPage - 1) * state.pageSize;
+        const end = start + state.pageSize;
+        const pageProducts = state.filteredProducts.slice(start, end);
+
+        tbody.innerHTML = pageProducts.map(product => {
+            const variant = product.variants[0];
+            const analysis = state.analysisCache[product.id];
+            const hasMultipleVariants = product.variants.length > 1;
+
+            // Calculate margin
+            let marginPct = null;
+            let marginClass = 'text-gray-500';
+            if (variant.cost && variant.cost > 0) {
+                marginPct = ((variant.price - variant.cost) / variant.price) * 100;
+                if (marginPct < 0) marginClass = 'text-red-400 bg-red-900/20';
+                else if (marginPct < 15) marginClass = 'text-yellow-400';
+                else marginClass = 'text-green-400';
+            }
+
+            // Status badge
+            let statusBadge = '';
+            if (analysis?.error) {
+                statusBadge = '<span class="px-2 py-1 text-xs rounded bg-red-900/50 text-red-400">Failed</span>';
+            } else if (analysis?.applied) {
+                statusBadge = '<span class="px-2 py-1 text-xs rounded bg-green-900/50 text-green-400">Updated</span>';
+            } else if (analysis?.suggestedPrice) {
+                statusBadge = '<span class="px-2 py-1 text-xs rounded bg-blue-900/50 text-blue-400">Review</span>';
+            } else if (analysis?.analyzing) {
+                statusBadge = '<span class="px-2 py-1 text-xs rounded bg-yellow-900/50 text-yellow-400 animate-pulse-dot">Analyzing...</span>';
+            } else {
+                statusBadge = '<span class="px-2 py-1 text-xs rounded bg-gray-700 text-gray-400">Analyze</span>';
+            }
+
+            // Suggested price display
+            let suggestedDisplay = '—';
+            if (analysis?.suggestedPrice && !analysis.applied) {
+                const delta = analysis.suggestedPrice - variant.price;
+                const deltaPct = (delta / variant.price) * 100;
+                const sign = delta >= 0 ? '+' : '';
+                suggestedDisplay = `
+                    <span class="text-blue-400 font-medium">$${analysis.suggestedPrice.toFixed(2)}</span>
+                    <span class="text-xs ${delta >= 0 ? 'text-green-400' : 'text-red-400'}">(${sign}$${delta.toFixed(2)} / ${sign}${deltaPct.toFixed(1)}%)</span>
+                `;
+            }
+
+            // Action buttons
+            let actionButtons = '';
+            if (analysis?.error) {
+                actionButtons = `<button onclick="analyzeProduct('${product.id}')" class="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded">Retry</button>`;
+            } else if (analysis?.suggestedPrice && !analysis.applied) {
+                actionButtons = `
+                    <button onclick="acceptSuggestion('${product.id}')" class="px-3 py-1 text-xs bg-green-600 hover:bg-green-700 rounded">Accept</button>
+                    <button onclick="showProductDetail('${product.id}')" class="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded">View</button>
+                `;
+            } else if (analysis?.applied) {
+                actionButtons = `<button onclick="analyzeProduct('${product.id}')" class="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded">Re-analyze</button>`;
+            } else {
+                actionButtons = `<button onclick="analyzeProduct('${product.id}')" class="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-700 rounded">Analyze</button>`;
+            }
+
+            return `
+                <tr class="border-b border-gray-700 hover:bg-gray-800/50 ${state.selectedProducts.has(product.id) ? 'bg-blue-900/20' : ''}">
+                    <td class="px-4 py-3">
+                        <input type="checkbox" class="product-checkbox rounded bg-gray-700 border-gray-600"
+                            data-id="${product.id}" ${state.selectedProducts.has(product.id) ? 'checked' : ''}>
+                    </td>
+                    <td class="px-4 py-3 cursor-pointer" onclick="showProductDetail('${product.id}')">
+                        <div class="font-medium">${product.title}</div>
+                        <div class="text-xs text-gray-500">${product.vendor || 'No vendor'}</div>
+                        ${hasMultipleVariants ? `<span class="inline-block mt-1 px-2 py-0.5 text-xs bg-gray-700 rounded">${product.variants.length} variants</span>` : ''}
+                    </td>
+                    <td class="px-4 py-3 text-gray-400">${variant.sku || '—'}</td>
+                    <td class="px-4 py-3 text-right font-medium">$${variant.price.toFixed(2)}</td>
+                    <td class="px-4 py-3 text-right">
+                        ${variant.cost ? `$${variant.cost.toFixed(2)}` : '<span class="text-gray-500 cursor-pointer hover:text-blue-400" onclick="editCost(\''+product.id+'\', \''+variant.id+'\')">Add cost</span>'}
+                    </td>
+                    <td class="px-4 py-3 text-right ${marginClass}">
+                        ${marginPct !== null ? marginPct.toFixed(1) + '%' : '—'}
+                    </td>
+                    <td class="px-4 py-3 text-right">${suggestedDisplay}</td>
+                    <td class="px-4 py-3 text-center">${statusBadge}</td>
+                    <td class="px-4 py-3 text-center space-x-1">${actionButtons}</td>
+                </tr>
+            `;
+        }).join('');
+
+        // Update pagination
+        const totalPages = Math.ceil(state.filteredProducts.length / state.pageSize);
+        document.getElementById('page-info').textContent = `Page ${state.currentPage} of ${totalPages || 1}`;
+        document.getElementById('prev-page').disabled = state.currentPage <= 1;
+        document.getElementById('next-page').disabled = state.currentPage >= totalPages;
+        document.getElementById('showing-count').textContent = state.filteredProducts.length;
+
+        // Bind checkboxes
+        document.querySelectorAll('.product-checkbox').forEach(cb => {
+            cb.addEventListener('change', (e) => {
+                const id = parseInt(e.target.dataset.id);
+                if (e.target.checked) {
+                    state.selectedProducts.add(id);
+                } else {
+                    state.selectedProducts.delete(id);
+                }
+                updateBulkActionBar();
+            });
+        });
+    }
+
+    function updateBulkActionBar() {
+        const bar = document.getElementById('bulk-action-bar');
+        const count = state.selectedProducts.size;
+
+        if (count > 0) {
+            bar.classList.remove('hidden');
+            document.getElementById('selected-count').textContent = `${count} product${count > 1 ? 's' : ''} selected`;
+
+            // Check if any selected have suggestions
+            const hasSuggestions = [...state.selectedProducts].some(id => {
+                const analysis = state.analysisCache[id];
+                return analysis?.suggestedPrice && !analysis.applied;
+            });
+            document.getElementById('accept-all-btn').disabled = !hasSuggestions;
+        } else {
+            bar.classList.add('hidden');
+        }
+    }
+
+    // ============================================================================
+    // PRODUCT ANALYSIS
+    // ============================================================================
+    async function analyzeProduct(productId) {
+        const product = state.products.find(p => p.id == productId);
+        if (!product) return;
+
+        const settings = getSettings();
+
+        // Update UI to show analyzing
+        state.analysisCache[productId] = { analyzing: true };
+        renderProducts();
+
+        try {
+            // Step 1: Search competitors
+            const competitors = await searchCompetitors(
+                product.title,
+                product.productType,
+                settings.productNiche
+            );
+
+            // Step 2: AI analysis
+            const analysis = await analyzeWithAI(product, competitors, settings);
+
+            // Store result
+            state.analysisCache[productId] = {
+                ...analysis,
+                applied: false
+            };
+
+            localStorage.setItem('oilslick_analysis', JSON.stringify(state.analysisCache));
+            logActivity(`Analysis complete: ${product.title} - suggested $${analysis.suggestedPrice?.toFixed(2) || 'N/A'}`);
+
+        } catch (e) {
+            console.error('Analysis error:', e);
+            state.analysisCache[productId] = { error: e.message };
+            showToast(`Analysis failed: ${e.message}`, 'error');
+        }
+
+        renderProducts();
+        updateDashboard();
+    }
+
+    async function analyzeSelected() {
+        if (state.processing) return;
+        state.processing = true;
+        state.stopRequested = false;
+
+        const settings = getSettings();
+        const concurrency = settings.concurrency || 20;
+        const ids = [...state.selectedProducts];
+
+        document.getElementById('stop-btn').classList.remove('hidden');
+
+        // Process in batches
+        for (let i = 0; i < ids.length && !state.stopRequested; i += concurrency) {
+            const batch = ids.slice(i, i + concurrency);
+            await Promise.all(batch.map(id => analyzeProduct(id)));
+        }
+
+        state.processing = false;
+        document.getElementById('stop-btn').classList.add('hidden');
+
+        if (state.stopRequested) {
+            showToast('Processing stopped', 'warning');
+        } else {
+            showToast(`Analyzed ${ids.length} products`, 'success');
+            logActivity(`Bulk analysis: ${ids.length} products processed`);
+        }
+    }
+
+    async function analyzeVisible() {
+        const ids = state.filteredProducts.map(p => p.id);
+        state.selectedProducts = new Set(ids);
+        updateBulkActionBar();
+        await analyzeSelected();
+    }
+
+    function stopProcessing() {
+        state.stopRequested = true;
+    }
+
+    async function acceptSuggestion(productId) {
+        const product = state.products.find(p => p.id == productId);
+        const analysis = state.analysisCache[productId];
+
+        if (!product || !analysis?.suggestedPrice) return;
+
+        try {
+            const variant = product.variants[0];
+            await updateProductPrice(productId, variant.id, analysis.suggestedPrice);
+
+            state.analysisCache[productId].applied = true;
+            localStorage.setItem('oilslick_analysis', JSON.stringify(state.analysisCache));
+
+            showToast(`Price updated to $${analysis.suggestedPrice.toFixed(2)}`, 'success');
+            renderProducts();
+            updateDashboard();
+
+        } catch (e) {
+            showToast('Failed to update price: ' + e.message, 'error');
+        }
+    }
+
+    async function acceptAllSelected() {
+        const selectedWithSuggestions = [...state.selectedProducts].filter(id => {
+            const analysis = state.analysisCache[id];
+            return analysis?.suggestedPrice && !analysis.applied;
+        });
+
+        let success = 0, failed = 0;
+
+        for (const id of selectedWithSuggestions) {
+            try {
+                await acceptSuggestion(id);
+                success++;
+            } catch (e) {
+                failed++;
+            }
+        }
+
+        showToast(`Updated ${success} prices${failed > 0 ? `, ${failed} failed` : ''}`, success > 0 ? 'success' : 'error');
+    }
+
+    function deselectAll() {
+        state.selectedProducts.clear();
+        updateBulkActionBar();
+        renderProducts();
+    }
+
+    // ============================================================================
+    // PRODUCT DETAIL MODAL
+    // ============================================================================
+    function showProductDetail(productId) {
+        const product = state.products.find(p => p.id == productId);
+        if (!product) return;
+
+        const variant = product.variants[0];
+        const analysis = state.analysisCache[productId];
+        const settings = getSettings();
+
+        document.getElementById('modal-product-title').textContent = product.title;
+
+        let content = '';
+
+        // Variants section (if multiple)
+        if (product.variants.length > 1) {
+            content += `
+                <div class="mb-6">
+                    <h4 class="text-sm font-medium text-gray-400 mb-2">Variants (${product.variants.length})</h4>
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-left text-gray-500 border-b border-gray-700">
+                                <th class="py-2">Option</th>
+                                <th class="py-2">SKU</th>
+                                <th class="py-2 text-right">Price</th>
+                                <th class="py-2 text-right">Cost</th>
+                                <th class="py-2 text-right">Margin</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${product.variants.map(v => {
+                                const margin = v.cost ? ((v.price - v.cost) / v.price * 100) : null;
+                                const marginClass = margin === null ? 'text-gray-500' : margin < 0 ? 'text-red-400' : margin < 15 ? 'text-yellow-400' : 'text-green-400';
+                                return `
+                                    <tr class="border-b border-gray-700/50">
+                                        <td class="py-2">${v.title}</td>
+                                        <td class="py-2 text-gray-400">${v.sku || '—'}</td>
+                                        <td class="py-2 text-right">$${v.price.toFixed(2)}</td>
+                                        <td class="py-2 text-right">${v.cost ? '$' + v.cost.toFixed(2) : '—'}</td>
+                                        <td class="py-2 text-right ${marginClass}">${margin !== null ? margin.toFixed(1) + '%' : '—'}</td>
+                                    </tr>
+                                `;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+
+        // Product metadata
+        content += `
+            <div class="mb-6">
+                <h4 class="text-sm font-medium text-gray-400 mb-3">Product Setup</h4>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">Category</label>
+                        <select id="meta-category" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
+                            <option>Commodity</option>
+                            <option selected>Branded</option>
+                            <option>Differentiated</option>
+                            <option>Luxury</option>
+                            <option>Seasonal</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">Lifecycle</label>
+                        <select id="meta-lifecycle" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
+                            <option>New</option>
+                            <option selected>Core</option>
+                            <option>Tail</option>
+                            <option>Clearance</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">MAP Price</label>
+                        <input type="number" id="meta-map" step="0.01" placeholder="—"
+                            class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">MSRP</label>
+                        <input type="number" id="meta-msrp" step="0.01" value="${variant.compareAtPrice || ''}" placeholder="—"
+                            class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // AI Analysis Result
+        if (analysis && !analysis.error && analysis.suggestedPrice) {
+            const currentMargin = variant.cost ? ((variant.price - variant.cost) / variant.price * 100) : null;
+            const suggestedMargin = variant.cost ? ((analysis.suggestedPrice - variant.cost) / analysis.suggestedPrice * 100) : null;
+            const delta = analysis.suggestedPrice - variant.price;
+            const deltaPct = (delta / variant.price) * 100;
+
+            content += `
+                <div class="grid grid-cols-2 gap-6 mb-6">
+                    <div class="bg-gray-700/50 rounded-lg p-4">
+                        <h4 class="text-sm font-medium text-gray-400 mb-3">AI Recommendation</h4>
+                        <div class="mb-4">
+                            <div class="text-3xl font-semibold text-blue-400">$${analysis.suggestedPrice.toFixed(2)}</div>
+                            <div class="text-sm ${delta >= 0 ? 'text-green-400' : 'text-red-400'}">
+                                ${delta >= 0 ? '+' : ''}$${delta.toFixed(2)} (${delta >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%)
+                            </div>
+                            <div class="text-xs text-gray-500 mt-1">
+                                Confidence: <span class="${analysis.confidence === 'high' ? 'text-green-400' : analysis.confidence === 'medium' ? 'text-yellow-400' : 'text-red-400'}">${analysis.confidence}</span>
+                                — ${analysis.confidenceReason}
+                            </div>
+                        </div>
+                        <p class="text-sm text-gray-300 mb-4">${analysis.summary}</p>
+                        <div class="flex gap-2">
+                            ${!analysis.applied ? `
+                                <button onclick="acceptSuggestion('${productId}'); closeModal();" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded text-sm">Accept</button>
+                                <button onclick="editAndAccept('${productId}')" class="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded text-sm">Edit & Accept</button>
+                                <button onclick="dismissSuggestion('${productId}')" class="px-4 py-2 text-gray-400 hover:text-white text-sm">Dismiss</button>
+                            ` : '<span class="text-green-400 text-sm">Price updated</span>'}
+                        </div>
+                    </div>
+                    <div class="bg-gray-700/50 rounded-lg p-4">
+                        <h4 class="text-sm font-medium text-gray-400 mb-3">Analysis Details</h4>
+                        <div class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm mb-4">
+                            <div class="text-gray-500">Price Floor:</div>
+                            <div>$${analysis.priceFloor?.toFixed(2) || '—'}</div>
+                            <div class="text-gray-500">Price Ceiling:</div>
+                            <div>$${analysis.priceCeiling?.toFixed(2) || '—'}</div>
+                            <div class="text-gray-500">Competitor Low:</div>
+                            <div>$${analysis.competitorAnalysis?.low?.toFixed(2) || '—'}</div>
+                            <div class="text-gray-500">Competitor Median:</div>
+                            <div>$${analysis.competitorAnalysis?.median?.toFixed(2) || '—'}</div>
+                            <div class="text-gray-500">Competitor High:</div>
+                            <div>$${analysis.competitorAnalysis?.high?.toFixed(2) || '—'}</div>
+                        </div>
+                        <h5 class="text-xs font-medium text-gray-500 mb-2">AI Reasoning</h5>
+                        <ul class="text-sm text-gray-400 space-y-1">
+                            ${(analysis.reasoning || []).map(r => `<li class="flex"><span class="mr-2">•</span>${r}</li>`).join('')}
+                        </ul>
+                    </div>
+                </div>
+            `;
+
+            // Competitor sources (collapsible)
+            if (analysis.competitorAnalysis) {
+                content += `
+                    <details class="mb-6">
+                        <summary class="text-sm font-medium text-gray-400 cursor-pointer hover:text-white">
+                            Sources (${(analysis.competitorAnalysis.kept?.length || 0)} kept, ${(analysis.competitorAnalysis.excluded?.length || 0)} excluded)
+                        </summary>
+                        <div class="mt-3 space-y-4">
+                            <div class="text-xs text-gray-500">Search query: "${analysis.searchQuery}"</div>
+                            ${analysis.competitorAnalysis.kept?.length ? `
+                                <div>
+                                    <h5 class="text-xs font-medium text-gray-500 mb-2">Kept Sources</h5>
+                                    <table class="w-full text-sm">
+                                        <tbody>
+                                            ${analysis.competitorAnalysis.kept.map(s => `
+                                                <tr class="border-b border-gray-700/50">
+                                                    <td class="py-1 text-blue-400">${s.source}</td>
+                                                    <td class="py-1 text-right">$${s.price?.toFixed(2) || '—'}</td>
+                                                    <td class="py-1 text-gray-500 text-right">${s.reason}</td>
+                                                </tr>
+                                            `).join('')}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ` : ''}
+                            ${analysis.competitorAnalysis.excluded?.length ? `
+                                <div>
+                                    <h5 class="text-xs font-medium text-gray-500 mb-2">Excluded Sources</h5>
+                                    <table class="w-full text-sm">
+                                        <tbody>
+                                            ${analysis.competitorAnalysis.excluded.map(s => `
+                                                <tr class="border-b border-gray-700/50 text-gray-500">
+                                                    <td class="py-1">${s.source}</td>
+                                                    <td class="py-1 text-right">${s.reason}</td>
+                                                </tr>
+                                            `).join('')}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ` : ''}
+                        </div>
+                    </details>
+                `;
+            }
+
+            // Profit comparison
+            content += `
+                <div>
+                    <h4 class="text-sm font-medium text-gray-400 mb-3">Profit Impact</h4>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="bg-gray-700/50 rounded p-3 text-center">
+                            <div class="text-xs text-gray-500 mb-1">Current</div>
+                            <div class="text-lg font-medium">$${variant.price.toFixed(2)}</div>
+                            ${variant.cost ? `
+                                <div class="text-sm text-gray-400">Profit: $${(variant.price - variant.cost).toFixed(2)}</div>
+                                <div class="text-sm ${currentMargin < 0 ? 'text-red-400' : 'text-green-400'}">${currentMargin.toFixed(1)}% margin</div>
+                            ` : ''}
+                        </div>
+                        <div class="bg-blue-900/30 border border-blue-800 rounded p-3 text-center">
+                            <div class="text-xs text-blue-400 mb-1">Suggested</div>
+                            <div class="text-lg font-medium text-blue-400">$${analysis.suggestedPrice.toFixed(2)}</div>
+                            ${variant.cost ? `
+                                <div class="text-sm text-gray-400">Profit: $${(analysis.suggestedPrice - variant.cost).toFixed(2)}</div>
+                                <div class="text-sm ${suggestedMargin < 0 ? 'text-red-400' : 'text-green-400'}">${suggestedMargin.toFixed(1)}% margin</div>
+                            ` : ''}
+                        </div>
+                    </div>
+                </div>
+            `;
+        } else if (analysis?.error) {
+            content += `
+                <div class="bg-red-900/20 border border-red-800 rounded-lg p-4 mb-6">
+                    <h4 class="text-red-400 font-medium mb-2">Analysis Failed</h4>
+                    <p class="text-sm text-gray-400">${analysis.error}</p>
+                    <button onclick="analyzeProduct('${productId}')" class="mt-3 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm">Retry Analysis</button>
+                </div>
+            `;
+        } else {
+            content += `
+                <div class="bg-gray-700/50 rounded-lg p-6 text-center mb-6">
+                    <p class="text-gray-400 mb-3">No analysis available for this product</p>
+                    <button onclick="analyzeProduct('${productId}')" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm">Run Analysis</button>
+                </div>
+            `;
+        }
+
+        document.getElementById('modal-content').innerHTML = content;
+        document.getElementById('product-modal').classList.remove('hidden');
+    }
+
+    function closeModal() {
+        document.getElementById('product-modal').classList.add('hidden');
+    }
+
+    function dismissSuggestion(productId) {
+        delete state.analysisCache[productId];
+        localStorage.setItem('oilslick_analysis', JSON.stringify(state.analysisCache));
+        closeModal();
+        renderProducts();
+    }
+
+    function editCost(productId, variantId) {
+        const newCost = prompt('Enter cost for this product:');
+        if (newCost !== null) {
+            const cost = parseFloat(newCost);
+            if (!isNaN(cost) && cost >= 0) {
+                const product = state.products.find(p => p.id == productId);
+                if (product) {
+                    const variant = product.variants.find(v => v.id == variantId);
+                    if (variant) {
+                        variant.cost = cost;
+                        localStorage.setItem('oilslick_products', JSON.stringify(state.products));
+                        renderProducts();
+                        showToast('Cost updated', 'success');
+                    }
+                }
+            }
+        }
+    }
+
+    // ============================================================================
+    // DASHBOARD
+    // ============================================================================
+    function updateDashboard() {
+        const settings = getSettings();
+        const minMargin = settings.minMargin || 20;
+
+        // Metrics
+        document.getElementById('metric-total').textContent = state.products.length;
+
+        // Average margin
+        let totalMargin = 0, marginCount = 0;
+        state.products.forEach(p => {
+            const v = p.variants[0];
+            if (v.cost && v.cost > 0) {
+                totalMargin += ((v.price - v.cost) / v.price) * 100;
+                marginCount++;
+            }
+        });
+        const avgMargin = marginCount > 0 ? (totalMargin / marginCount) : null;
+        const marginEl = document.getElementById('metric-margin');
+        if (avgMargin !== null) {
+            marginEl.textContent = avgMargin.toFixed(1) + '%';
+            marginEl.className = 'text-2xl font-semibold ' +
+                (avgMargin > 25 ? 'text-green-400' : avgMargin > 15 ? 'text-yellow-400' : 'text-red-400');
+        } else {
+            marginEl.textContent = '—';
+            marginEl.className = 'text-2xl font-semibold';
+        }
+
+        // Analyzed count
+        const analyzedCount = Object.keys(state.analysisCache).filter(k =>
+            state.analysisCache[k].suggestedPrice && !state.analysisCache[k].error
+        ).length;
+        document.getElementById('metric-analyzed').textContent = `${analyzedCount} of ${state.products.length}`;
+        document.getElementById('metric-analyzed-pct').textContent = state.products.length > 0
+            ? `${Math.round(analyzedCount / state.products.length * 100)}% complete` : '';
+
+        // Pending updates
+        const pendingCount = Object.keys(state.analysisCache).filter(k =>
+            state.analysisCache[k].suggestedPrice && !state.analysisCache[k].applied && !state.analysisCache[k].error
+        ).length;
+        document.getElementById('metric-pending').textContent = pendingCount;
+
+        // Action cards
+        const actionCards = document.getElementById('action-cards');
+        let cards = '';
+
+        // Negative margins
+        const negativeMarginProducts = state.products.filter(p => {
+            const v = p.variants[0];
+            return v.cost && v.cost > 0 && v.price < v.cost;
+        });
+        if (negativeMarginProducts.length > 0) {
+            cards += `
+                <div class="bg-gray-800 border-l-4 border-red-500 rounded-lg p-4">
+                    <h3 class="font-medium text-red-400">${negativeMarginProducts.length} products are losing money</h3>
+                    <p class="text-sm text-gray-400 mt-1">Current price is below your cost</p>
+                    <button onclick="navigateTo('products'); applyFilter('status', 'Negative Margin')"
+                        class="mt-3 px-4 py-2 bg-red-600 hover:bg-red-700 rounded text-sm">Review & Fix</button>
+                </div>
+            `;
+        }
+
+        // Below floor
+        const belowFloorProducts = state.products.filter(p => {
+            const v = p.variants[0];
+            if (!v.cost || v.cost <= 0) return false;
+            const margin = ((v.price - v.cost) / v.price) * 100;
+            return margin >= 0 && margin < minMargin;
+        });
+        if (belowFloorProducts.length > 0) {
+            cards += `
+                <div class="bg-gray-800 border-l-4 border-yellow-500 rounded-lg p-4">
+                    <h3 class="font-medium text-yellow-400">${belowFloorProducts.length} products below margin floor</h3>
+                    <p class="text-sm text-gray-400 mt-1">Priced below your ${minMargin}% minimum margin target</p>
+                    <button onclick="navigateTo('products'); applyFilter('status', 'Below Floor')"
+                        class="mt-3 px-4 py-2 bg-yellow-600 hover:bg-yellow-700 rounded text-sm">Review Suggestions</button>
+                </div>
+            `;
+        }
+
+        // Missing costs
+        const missingCostProducts = state.products.filter(p => !p.variants[0].cost);
+        if (missingCostProducts.length > 0) {
+            cards += `
+                <div class="bg-gray-800 border-l-4 border-blue-500 rounded-lg p-4">
+                    <h3 class="font-medium text-blue-400">${missingCostProducts.length} products missing cost data</h3>
+                    <p class="text-sm text-gray-400 mt-1">Cannot calculate margins without costs</p>
+                    <button onclick="navigateTo('products'); applyFilter('status', 'Missing Cost')"
+                        class="mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm">Add Costs</button>
+                </div>
+            `;
+        }
+
+        // Ready to update
+        if (pendingCount > 0) {
+            cards += `
+                <div class="bg-gray-800 border-l-4 border-green-500 rounded-lg p-4">
+                    <h3 class="font-medium text-green-400">${pendingCount} price updates ready</h3>
+                    <p class="text-sm text-gray-400 mt-1">AI suggestions waiting for your approval</p>
+                    <button onclick="navigateTo('products'); applyFilter('status', 'Has Suggestion')"
+                        class="mt-3 px-4 py-2 bg-green-600 hover:bg-green-700 rounded text-sm">Review & Apply</button>
+                </div>
+            `;
+        }
+
+        // Stale analysis (older than 7 days)
+        const staleProducts = state.products.filter(p => {
+            const analysis = state.analysisCache[p.id];
+            if (!analysis?.analyzedAt) return false;
+            const age = Date.now() - new Date(analysis.analyzedAt).getTime();
+            return age > 7 * 24 * 60 * 60 * 1000;
+        });
+        if (staleProducts.length > 0) {
+            cards += `
+                <div class="bg-gray-800 border-l-4 border-gray-500 rounded-lg p-4">
+                    <h3 class="font-medium text-gray-300">${staleProducts.length} products have stale data</h3>
+                    <p class="text-sm text-gray-400 mt-1">Competitor data is over a week old</p>
+                    <button onclick="navigateTo('products')"
+                        class="mt-3 px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded text-sm">Re-analyze</button>
+                </div>
+            `;
+        }
+
+        actionCards.innerHTML = cards || '<p class="text-gray-500 col-span-2 text-center py-8">No action items - your store is in good shape!</p>';
+
+        // Activity feed
+        const activityFeed = document.getElementById('activity-feed');
+        if (state.activityLog.length > 0) {
+            activityFeed.innerHTML = state.activityLog.slice(0, 10).map(a => `
+                <div class="text-sm py-2 border-b border-gray-700 last:border-0">
+                    <span class="text-gray-400">${a.message}</span>
+                    <span class="text-xs text-gray-600 ml-2">${formatTime(a.timestamp)}</span>
+                </div>
+            `).join('');
+        }
+    }
+
+    function applyFilter(type, value) {
+        if (type === 'status') {
+            document.getElementById('filter-status').value = value;
+        } else if (type === 'sort') {
+            document.getElementById('filter-sort').value = value;
+        }
+        filterProducts();
+    }
+
+    // ============================================================================
+    // UTILITIES
+    // ============================================================================
+    function showToast(message, type = 'info') {
+        const container = document.getElementById('toast-container');
+        const colors = {
+            success: 'bg-green-600',
+            error: 'bg-red-600',
+            warning: 'bg-yellow-600',
+            info: 'bg-blue-600'
+        };
+
+        const toast = document.createElement('div');
+        toast.className = `${colors[type]} px-4 py-3 rounded shadow-lg text-sm transform transition-all duration-300`;
+        toast.textContent = message;
+        container.appendChild(toast);
+
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
+    }
+
+    function logActivity(message) {
+        state.activityLog.unshift({
+            message,
+            timestamp: new Date().toISOString()
+        });
+        state.activityLog = state.activityLog.slice(0, 50);
+        localStorage.setItem('oilslick_activity', JSON.stringify(state.activityLog));
+    }
+
+    function formatTime(isoString) {
+        const date = new Date(isoString);
+        const now = new Date();
+        const diff = now - date;
+
+        if (diff < 60000) return 'just now';
+        if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+        if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+        return date.toLocaleDateString();
+    }
+
+    function toggleSwitch(btn) {
+        const enabled = btn.dataset.enabled === 'true';
+        btn.dataset.enabled = !enabled;
+        updateSwitchVisual(btn);
+    }
+
+    function updateSwitchVisual(btn) {
+        const enabled = btn.dataset.enabled === 'true';
+        const knob = btn.querySelector('span');
+        if (enabled) {
+            btn.classList.remove('bg-gray-600');
+            btn.classList.add('bg-blue-600');
+            knob.style.left = '1.25rem';
+        } else {
+            btn.classList.remove('bg-blue-600');
+            btn.classList.add('bg-gray-600');
+            knob.style.left = '0.125rem';
+        }
+    }
+
+    function exportCSV() {
+        const headers = ['Title', 'Vendor', 'SKU', 'Current Price', 'Cost', 'Margin %', 'Suggested Price', 'Status'];
+        const rows = state.filteredProducts.map(p => {
+            const v = p.variants[0];
+            const analysis = state.analysisCache[p.id];
+            const margin = v.cost ? ((v.price - v.cost) / v.price * 100).toFixed(1) : '';
+            const status = analysis?.applied ? 'Updated' : analysis?.suggestedPrice ? 'Has Suggestion' : 'Needs Analysis';
+            return [
+                p.title,
+                p.vendor || '',
+                v.sku || '',
+                v.price.toFixed(2),
+                v.cost?.toFixed(2) || '',
+                margin,
+                analysis?.suggestedPrice?.toFixed(2) || '',
+                status
+            ];
+        });
+
+        const csv = [headers, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\n');
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `oilslick-pricing-${new Date().toISOString().split('T')[0]}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+
+    // ============================================================================
+    // EVENT LISTENERS
+    // ============================================================================
+    document.addEventListener('DOMContentLoaded', () => {
+        loadSettings();
+
+        // Slider value displays
+        document.querySelectorAll('input[type="range"]').forEach(slider => {
+            slider.addEventListener('input', (e) => {
+                const valueEl = document.getElementById(e.target.id + '-value');
+                if (valueEl) {
+                    valueEl.textContent = e.target.value + (e.target.id !== 'concurrency' ? '%' : '');
+                }
+            });
+        });
+
+        // Filter inputs
+        ['search-input', 'filter-status', 'filter-margin', 'filter-vendor', 'filter-sort'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.addEventListener(el.type === 'text' ? 'input' : 'change', filterProducts);
+            }
+        });
+
+        // Select all checkbox
+        document.getElementById('select-all').addEventListener('change', (e) => {
+            if (e.target.checked) {
+                state.filteredProducts.forEach(p => state.selectedProducts.add(p.id));
+            } else {
+                state.selectedProducts.clear();
+            }
+            updateBulkActionBar();
+            renderProducts();
+        });
+
+        // Pagination
+        document.getElementById('page-size').addEventListener('change', (e) => {
+            state.pageSize = parseInt(e.target.value);
+            state.currentPage = 1;
+            renderProducts();
+        });
+
+        document.getElementById('prev-page').addEventListener('click', () => {
+            if (state.currentPage > 1) {
+                state.currentPage--;
+                renderProducts();
+            }
+        });
+
+        document.getElementById('next-page').addEventListener('click', () => {
+            const totalPages = Math.ceil(state.filteredProducts.length / state.pageSize);
+            if (state.currentPage < totalPages) {
+                state.currentPage++;
+                renderProducts();
+            }
+        });
+
+        // Modal close on backdrop click
+        document.getElementById('product-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'product-modal') closeModal();
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeModal();
+        });
+
+        // Initial view
+        state.filteredProducts = [...state.products];
+        navigateTo('dashboard');
+
+        // If we have products, render them
+        if (state.products.length > 0) {
+            populateFilters();
+            updateDashboard();
+        }
+    });
+    </script>
+</body>
+</html>
