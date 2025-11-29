@@ -870,8 +870,25 @@
 
         console.log(`Cost loading complete: ${loadedCount} with cost, ${nullCostCount} null/empty, ${errorCount} errors`);
 
+        // Log some items without costs for debugging
+        const itemsWithoutCost = [];
+        for (const product of state.products) {
+            for (const variant of product.variants) {
+                if (!variant.cost && variant.inventoryItemId) {
+                    itemsWithoutCost.push({
+                        sku: variant.sku,
+                        title: product.title,
+                        inventoryItemId: variant.inventoryItemId
+                    });
+                }
+            }
+        }
+        if (itemsWithoutCost.length > 0) {
+            console.log(`Items without cost (first 20):`, itemsWithoutCost.slice(0, 20));
+        }
+
         if (loadedCount > 0) {
-            showToast(`Loaded costs for ${loadedCount} products`, 'success');
+            showToast(`Loaded ${loadedCount} costs (${nullCostCount} items have no cost in Shopify)`, 'success');
         } else if (nullCostCount > 0) {
             showToast(`Found ${nullCostCount} items but costs are empty in Shopify`, 'warning');
         } else if (errorCount > 0) {
@@ -880,6 +897,60 @@
             showToast(`No cost data found`, 'warning');
         }
     }
+
+    // Diagnostic function - run in browser console: debugCost('SKU-HERE')
+    window.debugCost = async function(sku) {
+        const settings = getSettings();
+
+        // Find the product/variant with this SKU
+        let foundVariant = null;
+        let foundProduct = null;
+        for (const product of state.products) {
+            for (const variant of product.variants) {
+                if (variant.sku === sku || variant.sku?.includes(sku)) {
+                    foundVariant = variant;
+                    foundProduct = product;
+                    break;
+                }
+            }
+            if (foundVariant) break;
+        }
+
+        if (!foundVariant) {
+            console.log(`SKU "${sku}" not found in loaded products`);
+            return;
+        }
+
+        console.log('=== COST DIAGNOSTIC ===');
+        console.log('Product:', foundProduct.title);
+        console.log('Variant:', foundVariant);
+        console.log('Inventory Item ID:', foundVariant.inventoryItemId);
+        console.log('Current cost in app:', foundVariant.cost);
+
+        if (!foundVariant.inventoryItemId) {
+            console.log('ERROR: No inventory_item_id on this variant!');
+            return;
+        }
+
+        // Fetch directly from Shopify
+        console.log('Fetching from Shopify API...');
+        try {
+            const res = await fetch(
+                `${CORS_PROXY}https://oil-slick-pad.myshopify.com/admin/api/2024-01/inventory_items/${foundVariant.inventoryItemId}.json`,
+                { headers: { 'X-Shopify-Access-Token': settings.shopifyToken } }
+            );
+
+            if (res.ok) {
+                const data = await res.json();
+                console.log('Shopify API Response:', data);
+                console.log('Cost from API:', data.inventory_item?.cost);
+            } else {
+                console.log('API Error:', res.status, await res.text());
+            }
+        } catch (e) {
+            console.log('Fetch error:', e);
+        }
+    };
 
     async function updateProductPrice(productId, variantId, newPrice) {
         const settings = getSettings();
