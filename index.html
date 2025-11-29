@@ -750,6 +750,8 @@
                             node {
                                 id
                                 title
+                                description
+                                descriptionHtml
                                 vendor
                                 productType
                                 handle
@@ -820,6 +822,8 @@
                     allProducts.push({
                         id: productId,
                         title: p.title,
+                        description: p.description || '',
+                        descriptionHtml: p.descriptionHtml || '',
                         vendor: p.vendor,
                         productType: p.productType,
                         handle: p.handle,
@@ -1165,25 +1169,48 @@ Respond in JSON:
         // Build user message with optional image
         const userContent = [];
 
-        // Add text description
+        // Get clean description text (strip HTML)
+        const descriptionText = product.description ||
+            (product.descriptionHtml || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+
+        // Add text description with full product details
         userContent.push({
             type: 'text',
-            text: `Identify this product:
-Title: ${product.title}
-Vendor/Brand: ${product.vendor || 'Unknown'}
-Product Type: ${product.productType || 'Unknown'}
-Tags: ${product.tags || 'None'}
-SKU: ${product.variants[0]?.sku || 'Unknown'}
-Price: $${product.variants[0]?.price?.toFixed(2) || 'Unknown'}
+            text: `Identify this product and determine its origin/quality tier:
 
-IMPORTANT: Determine if this is an import (China-made), domestic (USA-made), or heady (handmade art) item.`
+PRODUCT TITLE: ${product.title}
+
+PRODUCT DESCRIPTION:
+${descriptionText || 'No description available'}
+
+METADATA:
+- Vendor/Brand: ${product.vendor || 'Unknown'}
+- Product Type: ${product.productType || 'Unknown'}
+- Tags: ${product.tags || 'None'}
+- SKU: ${product.variants[0]?.sku || 'Unknown'}
+- Current Price: $${product.variants[0]?.price?.toFixed(2) || 'Unknown'}
+- Compare At Price: ${product.variants[0]?.compareAtPrice ? '$' + product.variants[0].compareAtPrice.toFixed(2) : 'None'}
+
+CRITICAL: Analyze ALL of the above information to determine:
+1. What this product ACTUALLY is (not just what the title says)
+2. Whether this is IMPORT (China mass-produced), DOMESTIC (USA-made), or HEADY (handmade art)
+3. Key features that affect pricing (material, size, brand reputation, uniqueness)
+${!product.image ? '\nNOTE: No product image available. Rely on title, description, and metadata. Be conservative with confidence.' : ''}`
         });
 
-        // Add image if available
+        // Add image if available (use high detail for better analysis)
         if (product.image) {
+            // Optimize image URL for AI analysis
+            let imageUrl = product.image;
+            if (imageUrl.startsWith('//')) {
+                imageUrl = 'https:' + imageUrl;
+            }
+            // Remove size constraints from Shopify CDN URLs
+            imageUrl = imageUrl.replace(/_\d+x\d*\./, '.');
+
             userContent.push({
                 type: 'image_url',
-                image_url: { url: product.image, detail: 'low' }
+                image_url: { url: imageUrl, detail: 'high' }
             });
         }
 
@@ -1198,8 +1225,8 @@ IMPORTANT: Determine if this is an import (China-made), domestic (USA-made), or 
             body: JSON.stringify({
                 model: 'gpt-4o',
                 messages: messages,
-                temperature: 0.2,
-                max_tokens: 500,
+                temperature: 0.4,   // Increased for more nuanced reasoning
+                max_tokens: 800,    // Increased for detailed analysis
                 response_format: { type: 'json_object' }
             })
         });
@@ -1642,6 +1669,9 @@ ${rawResults.slice(0, 15).map((r, i) => `${i + 1}. ${r.source}${r.isKnownRetaile
             competitorSection += `\n\nEXCLUDED (${excludedResults.length}): ${excludedResults.slice(0, 5).map(e => `${e.source} (${e.reason})`).join(', ')}`;
         }
 
+        // Get clean description for pricing context
+        const descText = (product.description || product.descriptionHtml?.replace(/<[^>]*>/g, ' ') || '').substring(0, 400);
+
         const userPrompt = `Analyze pricing for this product:
 
 PRODUCT INFO:
@@ -1651,6 +1681,7 @@ PRODUCT INFO:
 - Current Price: $${currentPrice.toFixed(2)}
 - Cost: ${cost > 0 ? '$' + cost.toFixed(2) : 'Unknown'}
 ${variant.compareAtPrice ? `- MSRP/Compare At: $${variant.compareAtPrice.toFixed(2)}` : ''}
+${descText ? `- Description: ${descText}${descText.length >= 400 ? '...' : ''}` : ''}
 
 AI PRODUCT IDENTIFICATION:
 - Identified as: ${productIdentity.identifiedAs || 'Unknown'}
@@ -1686,8 +1717,8 @@ Instructions:
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: userPrompt }
                 ],
-                temperature: 0.3,
-                max_tokens: 1500,
+                temperature: 0.5,   // Increased for creative pricing reasoning
+                max_tokens: 2000,   // Increased for detailed competitor analysis
                 response_format: { type: 'json_object' }
             })
         });
