@@ -1136,6 +1136,8 @@
                 content: `You are an expert in smoke shop products, heady glass, dab tools, and concentrate accessories.
 Your task is to identify what a product actually is, even if the title is incomplete, uses abbreviations, or jargon.
 
+FIRST: Think through what you're seeing. Study the image (if provided), read the title and description carefully, and form a clear mental picture of the product.
+
 CRITICAL: You must determine the ORIGIN/QUALITY TIER of this product. This is essential for accurate price comparisons.
 The three tiers are:
 
@@ -1154,24 +1156,22 @@ The three tiers are:
    - Brands: Individual artists, "heady" in name, gallery pieces
    - Examples: Heady glass pendants, artist collaboration pieces, functional art
 
-Analyze the product information and image (if provided) to determine:
-1. What type of product this is (e.g., dab tool, carb cap, banger, rig, pipe, grinder, tray, etc.)
-2. The brand if identifiable
-3. Key identifying features (material, size, color, style)
-4. The ORIGIN/QUALITY TIER (import, domestic, or heady) - THIS IS CRITICAL
-5. What search terms would find this EXACT product or SAME TIER products at RETAIL smoke shops
+YOUR MAIN TASK: Write a clear, helpful product summary that describes what this product is, its quality level, and key features that would affect pricing. This summary should help a human understand exactly what they're selling.
 
 Respond in JSON:
 {
   "productType": "specific product category",
   "brand": "brand name or null",
   "identifiedAs": "your best guess of what this product is in plain English",
-  "keyFeatures": ["feature1", "feature2"],
+  "productSummary": "2-3 sentence description written for a human reviewer. Describe what this product is, its quality/tier, materials, notable features, and anything relevant to pricing. Be specific and helpful.",
+  "keyFeatures": ["feature1", "feature2", "feature3"],
   "originTier": "import" | "domestic" | "heady",
   "originReasoning": "brief explanation of why you classified it this tier",
+  "qualityIndicators": ["indicator1", "indicator2"],
+  "pricingFactors": "what aspects of this product should influence its price",
   "searchQueries": ["query1", "query2", "query3"],
   "confidence": "high" | "medium" | "low",
-  "notes": "any relevant observations"
+  "notes": "any relevant observations or uncertainties"
 }`
             }
         ];
@@ -2327,9 +2327,16 @@ Respond in JSON:
                 },
                 productIdentity: {
                     identifiedAs: productIdentity.identifiedAs,
+                    productSummary: productIdentity.productSummary,
                     productType: productIdentity.productType,
                     originTier: productIdentity.originTier,
-                    confidence: productIdentity.confidence
+                    originReasoning: productIdentity.originReasoning,
+                    keyFeatures: (productIdentity.keyFeatures || []).slice(0, 5),
+                    qualityIndicators: productIdentity.qualityIndicators,
+                    pricingFactors: productIdentity.pricingFactors,
+                    confidence: productIdentity.confidence,
+                    brand: productIdentity.brand,
+                    notes: productIdentity.notes
                 },
                 analyzedAt: new Date().toISOString(),
                 applied: false,
@@ -2639,9 +2646,16 @@ Respond in JSON:
                 content += `
                     <div class="bg-blue-900/20 border border-blue-800 rounded-lg p-4 mb-6">
                         <div class="flex items-center justify-between mb-3">
-                            <h4 class="text-sm font-medium text-blue-400">AI Product Identification</h4>
+                            <h4 class="text-sm font-medium text-blue-400">AI Product Analysis</h4>
                             <span class="px-3 py-1 text-xs font-medium rounded border ${tierClass}">${tierLabel}</span>
                         </div>
+
+                        ${identity.productSummary ? `
+                        <div class="bg-gray-800/50 rounded-lg p-3 mb-4">
+                            <p class="text-sm text-gray-200 leading-relaxed">${identity.productSummary}</p>
+                        </div>
+                        ` : ''}
+
                         <div class="grid grid-cols-2 gap-4 text-sm">
                             <div>
                                 <span class="text-gray-500">Identified as:</span>
@@ -2656,23 +2670,44 @@ Respond in JSON:
                                 <span class="ml-2">${identity.brand || 'Unknown'}</span>
                             </div>
                             <div>
-                                <span class="text-gray-500">ID confidence:</span>
+                                <span class="text-gray-500">AI confidence:</span>
                                 <span class="ml-2 ${identity.confidence === 'high' ? 'text-green-400' : identity.confidence === 'medium' ? 'text-yellow-400' : 'text-gray-400'}">${identity.confidence || 'Unknown'}</span>
                             </div>
                         </div>
-                        ${identity.originReasoning ? `
-                            <div class="mt-2 text-sm">
-                                <span class="text-gray-500">Tier reasoning:</span>
-                                <span class="ml-2 text-gray-300">${identity.originReasoning}</span>
-                            </div>
-                        ` : ''}
+
                         ${identity.keyFeatures?.length ? `
-                            <div class="mt-2 text-sm">
+                            <div class="mt-3 text-sm">
                                 <span class="text-gray-500">Key features:</span>
-                                <span class="ml-2">${identity.keyFeatures.join(', ')}</span>
+                                <div class="mt-1 flex flex-wrap gap-1">
+                                    ${identity.keyFeatures.map(f => `<span class="px-2 py-0.5 bg-gray-700 rounded text-xs">${f}</span>`).join('')}
+                                </div>
                             </div>
                         ` : ''}
-                        ${identity.notes ? `<div class="mt-2 text-xs text-gray-500">${identity.notes}</div>` : ''}
+
+                        ${identity.qualityIndicators?.length ? `
+                            <div class="mt-3 text-sm">
+                                <span class="text-gray-500">Quality indicators:</span>
+                                <div class="mt-1 flex flex-wrap gap-1">
+                                    ${identity.qualityIndicators.map(q => `<span class="px-2 py-0.5 bg-${tier === 'heady' ? 'purple' : tier === 'domestic' ? 'blue' : 'orange'}-900/50 rounded text-xs">${q}</span>`).join('')}
+                                </div>
+                            </div>
+                        ` : ''}
+
+                        ${identity.pricingFactors ? `
+                            <div class="mt-3 text-sm">
+                                <span class="text-gray-500">Pricing factors:</span>
+                                <span class="ml-2 text-gray-300">${identity.pricingFactors}</span>
+                            </div>
+                        ` : ''}
+
+                        ${identity.originReasoning ? `
+                            <div class="mt-3 text-sm">
+                                <span class="text-gray-500">Tier reasoning:</span>
+                                <span class="ml-2 text-gray-400 text-xs">${identity.originReasoning}</span>
+                            </div>
+                        ` : ''}
+
+                        ${identity.notes ? `<div class="mt-3 text-xs text-gray-500 italic">${identity.notes}</div>` : ''}
                     </div>
                 `;
             }
