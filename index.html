@@ -500,6 +500,15 @@
         analysisCache: {} // productId -> analysis result
     };
 
+    // Helper to strip large fields before saving to localStorage
+    function getProductsForStorage(products) {
+        return products.map(p => ({
+            ...p,
+            description: '', // Don't store descriptions - they're too large
+            descriptionHtml: ''
+        }));
+    }
+
     // ============================================================================
     // SETTINGS MANAGEMENT
     // ============================================================================
@@ -872,7 +881,7 @@
                 }
             }
 
-            localStorage.setItem('oilslick_products', JSON.stringify(state.products));
+            localStorage.setItem('oilslick_products', JSON.stringify(getProductsForStorage(state.products)));
 
             showToast(`Loaded ${state.products.length} products (${costCount} variants with costs)`, 'success');
             logActivity(`Loaded ${state.products.length} products with ${costCount} costs from Shopify`);
@@ -1090,7 +1099,7 @@
                 }
             }
 
-            localStorage.setItem('oilslick_products', JSON.stringify(state.products));
+            localStorage.setItem('oilslick_products', JSON.stringify(getProductsForStorage(state.products)));
             return true;
 
         } catch (e) {
@@ -2550,7 +2559,7 @@ Instructions:
                     const variant = product.variants.find(v => v.id == variantId);
                     if (variant) {
                         variant.cost = cost;
-                        localStorage.setItem('oilslick_products', JSON.stringify(state.products));
+                        localStorage.setItem('oilslick_products', JSON.stringify(getProductsForStorage(state.products)));
                         renderProducts();
                         showToast('Cost updated', 'success');
                     }
