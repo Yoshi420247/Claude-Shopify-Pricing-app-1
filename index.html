@@ -700,76 +700,148 @@
             return;
         }
 
-        showToast('Loading products...', 'info');
+        showToast('Loading products with costs via GraphQL...', 'info');
 
         try {
             let allProducts = [];
-            let sinceId = 0;
-            let hasMore = true;
+            let hasNextPage = true;
+            let cursor = null;
             let pageCount = 0;
 
-            // Use since_id pagination (CORS proxy strips Link headers)
-            while (hasMore) {
-                pageCount++;
-                const url = `${CORS_PROXY}https://oil-slick-pad.myshopify.com/admin/api/2024-01/products.json?limit=250&since_id=${sinceId}`;
-
-                const res = await fetch(url, {
-                    headers: { 'X-Shopify-Access-Token': settings.shopifyToken }
-                });
-
-                if (!res.ok) throw new Error(`Shopify API error: ${res.status}`);
-
-                const data = await res.json();
-
-                if (data.products && data.products.length > 0) {
-                    allProducts = allProducts.concat(data.products);
-                    // Get the highest ID for the next page
-                    sinceId = Math.max(...data.products.map(p => p.id));
-                    showToast(`Loading products... (${allProducts.length} loaded)`, 'info');
-
-                    // If we got less than 250, we're done
-                    if (data.products.length < 250) {
-                        hasMore = false;
+            // GraphQL query to fetch products with inventory costs
+            const query = `
+                query getProductsWithCost($cursor: String) {
+                    products(first: 100, after: $cursor) {
+                        pageInfo {
+                            hasNextPage
+                            endCursor
+                        }
+                        edges {
+                            node {
+                                id
+                                title
+                                vendor
+                                productType
+                                handle
+                                tags
+                                status
+                                featuredImage {
+                                    url
+                                }
+                                variants(first: 100) {
+                                    edges {
+                                        node {
+                                            id
+                                            title
+                                            sku
+                                            price
+                                            compareAtPrice
+                                            inventoryItem {
+                                                id
+                                                unitCost {
+                                                    amount
+                                                    currencyCode
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                } else {
-                    hasMore = false;
+                }
+            `;
+
+            while (hasNextPage) {
+                pageCount++;
+                const res = await fetch(
+                    `${CORS_PROXY}https://oil-slick-pad.myshopify.com/admin/api/2024-01/graphql.json`,
+                    {
+                        method: 'POST',
+                        headers: {
+                            'X-Shopify-Access-Token': settings.shopifyToken,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            query: query,
+                            variables: { cursor: cursor }
+                        })
+                    }
+                );
+
+                if (!res.ok) throw new Error(`Shopify GraphQL error: ${res.status}`);
+
+                const result = await res.json();
+
+                if (result.errors) {
+                    console.error('GraphQL errors:', result.errors);
+                    throw new Error(result.errors[0]?.message || 'GraphQL query failed');
                 }
 
-                // Safety limit to prevent infinite loops
-                if (pageCount > 50) {
+                const products = result.data?.products;
+                if (!products) throw new Error('No products data in response');
+
+                // Process products from this page
+                for (const edge of products.edges) {
+                    const p = edge.node;
+                    // Extract numeric ID from GraphQL global ID (gid://shopify/Product/123456)
+                    const productId = p.id.split('/').pop();
+
+                    allProducts.push({
+                        id: productId,
+                        title: p.title,
+                        vendor: p.vendor,
+                        productType: p.productType,
+                        handle: p.handle,
+                        tags: p.tags?.join(', ') || '',
+                        status: p.status?.toLowerCase() || 'active',
+                        image: p.featuredImage?.url || null,
+                        variants: p.variants.edges.map(ve => {
+                            const v = ve.node;
+                            const variantId = v.id.split('/').pop();
+                            const inventoryItemId = v.inventoryItem?.id?.split('/').pop();
+                            const cost = v.inventoryItem?.unitCost?.amount;
+
+                            return {
+                                id: variantId,
+                                title: v.title,
+                                sku: v.sku,
+                                price: parseFloat(v.price),
+                                compareAtPrice: v.compareAtPrice ? parseFloat(v.compareAtPrice) : null,
+                                cost: cost ? parseFloat(cost) : null,
+                                inventoryItemId: inventoryItemId
+                            };
+                        })
+                    });
+                }
+
+                showToast(`Loading products... (${allProducts.length} loaded)`, 'info');
+
+                // Check for next page
+                hasNextPage = products.pageInfo.hasNextPage;
+                cursor = products.pageInfo.endCursor;
+
+                // Safety limit
+                if (pageCount > 100) {
                     console.warn('Hit pagination safety limit');
-                    hasMore = false;
+                    break;
                 }
             }
 
-            // Process products
-            state.products = allProducts.map(p => ({
-                id: p.id,
-                title: p.title,
-                vendor: p.vendor,
-                productType: p.product_type,
-                handle: p.handle,
-                variants: p.variants.map(v => ({
-                    id: v.id,
-                    title: v.title,
-                    sku: v.sku,
-                    price: parseFloat(v.price),
-                    compareAtPrice: v.compare_at_price ? parseFloat(v.compare_at_price) : null,
-                    cost: null, // Will need inventory item lookup for cost
-                    inventoryItemId: v.inventory_item_id
-                })),
-                image: p.image?.src || null,
-                tags: p.tags,
-                status: p.status
-            }));
+            state.products = allProducts;
 
-            // Try to get costs from inventory
-            await loadInventoryCosts();
+            // Count how many have costs
+            let costCount = 0;
+            for (const p of state.products) {
+                for (const v of p.variants) {
+                    if (v.cost !== null) costCount++;
+                }
+            }
 
             localStorage.setItem('oilslick_products', JSON.stringify(state.products));
 
-            showToast(`Loaded ${state.products.length} products`, 'success');
-            logActivity(`Loaded ${state.products.length} products from Shopify`);
+            showToast(`Loaded ${state.products.length} products (${costCount} variants with costs)`, 'success');
+            logActivity(`Loaded ${state.products.length} products with ${costCount} costs from Shopify`);
 
             populateFilters();
             renderProducts();
@@ -781,7 +853,8 @@
         }
     }
 
-    async function loadInventoryCosts() {
+    // Keep REST-based cost loading as fallback (in case GraphQL doesn't work)
+    async function loadInventoryCostsREST() {
         const settings = getSettings();
 
         // Collect all inventory item IDs
