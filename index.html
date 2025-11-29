@@ -791,21 +791,26 @@
         for (const product of state.products) {
             for (const variant of product.variants) {
                 if (variant.inventoryItemId) {
-                    inventoryItemIds.push(variant.inventoryItemId);
-                    variantMap.set(variant.inventoryItemId, variant);
+                    // Ensure ID is treated as string to avoid large number issues
+                    const idStr = String(variant.inventoryItemId);
+                    inventoryItemIds.push(idStr);
+                    variantMap.set(idStr, variant);
                 }
             }
         }
 
         if (inventoryItemIds.length === 0) {
             console.log('No inventory items to fetch costs for');
+            showToast('No inventory item IDs found - check product data', 'warning');
             return;
         }
 
         console.log(`Loading costs for ${inventoryItemIds.length} inventory items...`);
+        console.log('Sample inventory IDs:', inventoryItemIds.slice(0, 5));
         showToast(`Loading costs for ${inventoryItemIds.length} items...`, 'info');
 
         let loadedCount = 0;
+        let nullCostCount = 0;
         let errorCount = 0;
 
         // Batch fetch inventory items (max 100 per request per Shopify API)
@@ -815,27 +820,42 @@
             const idsParam = batch.join(',');
 
             try {
-                const res = await fetch(
-                    `${CORS_PROXY}https://oil-slick-pad.myshopify.com/admin/api/2024-01/inventory_items.json?ids=${idsParam}`,
-                    { headers: { 'X-Shopify-Access-Token': settings.shopifyToken } }
-                );
+                const url = `${CORS_PROXY}https://oil-slick-pad.myshopify.com/admin/api/2024-01/inventory_items.json?ids=${idsParam}`;
+                console.log(`Fetching batch ${i}-${i + batchSize}, URL length: ${url.length}`);
+
+                const res = await fetch(url, {
+                    headers: { 'X-Shopify-Access-Token': settings.shopifyToken }
+                });
 
                 if (res.ok) {
                     const data = await res.json();
+                    console.log(`Batch ${i}: Received ${data.inventory_items?.length || 0} items`);
 
                     if (data.inventory_items && Array.isArray(data.inventory_items)) {
                         for (const item of data.inventory_items) {
-                            const variant = variantMap.get(item.id);
+                            // Use string ID for lookup
+                            const itemIdStr = String(item.id);
+                            const variant = variantMap.get(itemIdStr);
+
                             if (variant) {
-                                variant.cost = item.cost ? parseFloat(item.cost) : null;
-                                if (variant.cost !== null) {
+                                if (item.cost !== null && item.cost !== undefined && item.cost !== '') {
+                                    variant.cost = parseFloat(item.cost);
                                     loadedCount++;
+                                    // Log first few successful loads for debugging
+                                    if (loadedCount <= 3) {
+                                        console.log(`Loaded cost for item ${itemIdStr}: $${variant.cost}`);
+                                    }
+                                } else {
+                                    nullCostCount++;
                                 }
+                            } else {
+                                console.warn(`No variant found for inventory item ${itemIdStr}`);
                             }
                         }
                     }
                 } else {
-                    console.error(`Failed to fetch batch ${i}-${i + batchSize}:`, res.status);
+                    const errText = await res.text();
+                    console.error(`Failed to fetch batch ${i}-${i + batchSize}:`, res.status, errText);
                     errorCount++;
                 }
             } catch (e) {
@@ -845,17 +865,19 @@
 
             // Update progress
             const progress = Math.min(100, Math.round(((i + batchSize) / inventoryItemIds.length) * 100));
-            showToast(`Loading costs... ${progress}% (${loadedCount} loaded)`, 'info');
+            showToast(`Loading costs... ${progress}% (${loadedCount} found)`, 'info');
         }
 
-        console.log(`Loaded ${loadedCount} costs, ${errorCount} batch errors`);
+        console.log(`Cost loading complete: ${loadedCount} with cost, ${nullCostCount} null/empty, ${errorCount} errors`);
 
         if (loadedCount > 0) {
             showToast(`Loaded costs for ${loadedCount} products`, 'success');
+        } else if (nullCostCount > 0) {
+            showToast(`Found ${nullCostCount} items but costs are empty in Shopify`, 'warning');
         } else if (errorCount > 0) {
-            showToast(`Failed to load costs - check API permissions`, 'error');
+            showToast(`Failed to load costs - check API permissions (read_inventory scope)`, 'error');
         } else {
-            showToast(`No cost data found in Shopify`, 'warning');
+            showToast(`No cost data found`, 'warning');
         }
     }
 
