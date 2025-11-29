@@ -1517,37 +1517,28 @@ IMPORTANT: Determine if this is an import (China-made), domestic (USA-made), or 
         const systemPrompt = `You are a pricing analyst for Oil Slick Pad, an online smoke shop selling heady glass, dab tools, and concentrate accessories.
 ${settings.productNiche ? `Store context: ${settings.productNiche}` : ''}
 
-CRITICAL - QUALITY TIER MATCHING:
-This product has been identified as: "${originTier}" tier
-- "import" = Made in China, mass-produced, value items
-- "domestic" = USA-made, higher quality, premium pricing
-- "heady" = Handmade art pieces, artist-made, luxury pricing
+YOUR PRIMARY GOAL: Find competitor prices and suggest competitive pricing.
 
-QUALITY TIER MATCHING (FLEXIBLE):
-- PREFER same-tier comparisons when available
-- If no same-tier competitors found, you MAY use adjacent tiers with notes
-- Note the tier difference in your analysis but DON'T exclude just for tier mismatch
-- For heady/art pieces: other art glass or premium items are acceptable comparisons
-- For imports: other value/budget items are acceptable
-- ALWAYS include available competitors - better to have data than none
+CRITICAL: EXTRACT PRICES FROM SEARCH RESULTS!
+- Look for $XX.XX patterns in titles AND descriptions
+- Prices like "$24.99", "$45.00", "Price: $30" are all valid
+- If you see ANY price in a search result, INCLUDE that competitor
 
-Your job is to:
-1. Validate which competitors are legitimate RETAIL smoke shops (not wholesale/B2B)
-2. Validate which products are actually the SAME or SIMILAR to ours
-3. Note quality tier differences but still include useful price data
-4. Use the prices to calculate competitive pricing
+Quality Tier (for context only - don't exclude based on tier):
+- This product is: "${originTier}" tier
+- Note tier differences but INCLUDE all relevant competitors
 
-FILTERING RULES:
-1. ONLY use prices from RETAIL smoke shops and head shops (online stores that sell to consumers)
-2. EXCLUDE all wholesale, distributor, B2B, bulk pricing sources
-3. EXCLUDE marketplace listings (eBay, Amazon marketplace sellers) unless from verified retailers
-4. Use FUZZY MATCHING - products don't need exact title matches. Match by:
-   - Same product type/category (glass pendant, dab tool, etc.)
-   - Similar style/size/features
-   - Comparable quality level (note if different)
+BE INCLUSIVE WITH COMPETITORS:
+- Any smoke shop, head shop, or glass retailer is valid
+- Same product CATEGORY is enough (pendant matches pendant, dabber matches dabber)
+- Don't require exact product matches - similar items count
+- ALWAYS include competitors you find - more data is better
 
-Known retail smoke shops to trust: ${RETAIL_SMOKE_SHOPS.slice(0, 10).join(', ')}
-Known wholesale domains to EXCLUDE: ${WHOLESALE_DOMAINS.slice(0, 10).join(', ')}
+Only exclude:
+- Wholesale/B2B/distributor sites (selling bulk to businesses)
+- Clearly unrelated products (e.g., car parts for glass search)
+
+Known wholesale domains to EXCLUDE: ${WHOLESALE_DOMAINS.slice(0, 5).join(', ')}
 
 Product was identified as: ${productIdentity.identifiedAs || 'Unknown'}
 Product type: ${productIdentity.productType || 'Unknown'}
@@ -1596,6 +1587,9 @@ Respond in JSON format:
         const rawResults = competitorData.rawResults || [];
         const excludedResults = competitorData.excluded || [];
 
+        // Debug logging
+        console.log(`AI Input - Verified prices: ${verifiedPrices.length}, Raw results: ${rawResults.length}, Excluded: ${excludedResults.length}`);
+
         let competitorSection = '';
 
         // Section 1: Verified prices (extracted from snippets or pages)
@@ -1609,11 +1603,11 @@ ${verifiedPrices.map((c, i) => `${i + 1}. ${c.source}: $${c.price.toFixed(2)}${c
 
         // Section 2: Raw results without prices (AI should try to identify prices or analyze)
         if (rawResults.length > 0) {
-            competitorSection += `\n\nADDITIONAL SEARCH RESULTS (no price extracted - analyze these):
-${rawResults.slice(0, 10).map((r, i) => `${i + 1}. ${r.source}${r.isKnownRetailer ? ' [KNOWN RETAILER]' : ''}
+            competitorSection += `\n\nADDITIONAL SEARCH RESULTS (${rawResults.length} found - look for prices in titles/descriptions):
+${rawResults.slice(0, 15).map((r, i) => `${i + 1}. ${r.source}${r.isKnownRetailer ? ' [KNOWN RETAILER]' : ''}
    URL: ${r.url}
    Title: ${r.title}
-   Description: ${(r.description || '').slice(0, 200)}`).join('\n\n')}`;
+   Description: ${(r.description || '').slice(0, 300)}`).join('\n\n')}`;
         }
 
         if (verifiedPrices.length === 0 && rawResults.length === 0) {
@@ -1645,16 +1639,16 @@ AI PRODUCT IDENTIFICATION:
 ${competitorSection}
 
 Instructions:
-1. First, review EXTRACTED PRICES - these are verified prices from search snippets or page scraping
-2. Then review ADDITIONAL SEARCH RESULTS - look for prices in titles/descriptions you can use
-3. For each competitor, verify it's a legitimate RETAIL smoke/head shop (not wholesale)
-4. PREFER same quality tier (${originTier}) but INCLUDE other tiers if needed - note the difference
-5. Use fuzzy matching - determine if each competitor's product is the same or similar type
-6. Prioritize [KNOWN RETAILER] sources as they are verified smoke shops
-7. KEEP as many relevant competitors as possible - include them with notes about tier differences
-8. Calculate competitive pricing based on available retail competitors
-9. If no competitors at all, recommend keeping current price with low confidence
-10. For heady/art glass: compare with other art glass, pendants, or premium glass items`;
+1. IMPORTANT: Extract prices from search results! Look for $XX.XX patterns in titles AND descriptions
+2. Review EXTRACTED PRICES first - these are verified prices we found
+3. Then scan ADDITIONAL SEARCH RESULTS for ANY price mentions (e.g., "$24.99", "Price: $30")
+4. BE INCLUSIVE - keep any result that sells similar products, even if not exact match
+5. For competitor matching: same category is enough (e.g., "glass pendant" matches "glass pendant")
+6. PREFER same quality tier but INCLUDE different tiers with notes - don't exclude just for tier
+7. Any online retailer selling glass/smoke products counts as a valid competitor
+8. If you find ANY prices at all, use them for analysis
+9. Calculate suggested price based on whatever competitor data you can find
+10. Only use "low confidence" if literally zero prices found anywhere in the results`;
 
         const res = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
