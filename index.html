@@ -197,6 +197,7 @@
                                 <th class="w-10 px-4 py-3 text-left">
                                     <input type="checkbox" id="select-all" class="rounded bg-gray-700 border-gray-600">
                                 </th>
+                                <th class="w-14 px-2 py-3"></th>
                                 <th class="px-4 py-3 text-left font-medium text-gray-400">Product</th>
                                 <th class="w-28 px-4 py-3 text-left font-medium text-gray-400">SKU</th>
                                 <th class="w-24 px-4 py-3 text-right font-medium text-gray-400">Price</th>
@@ -1805,7 +1806,7 @@ Instructions:
         return allResults;
     }
 
-    // Step 5: Deep deliberation when competitor data is insufficient
+    // Step 5: Deep deliberation when competitor data is insufficient - includes visual analysis
     async function deliberatePricing(product, initialAnalysis, competitorData, productIdentity, settings) {
         const variant = product.variants[0];
         const cost = variant.cost || 0;
@@ -1815,7 +1816,20 @@ Instructions:
         // Get description for context
         const descText = (product.description || product.descriptionHtml?.replace(/<[^>]*>/g, ' ') || '').substring(0, 500);
 
+        // Alternative prices found in retry searches
+        const altPrices = initialAnalysis.alternativePricesFound || [];
+        const altPriceInfo = altPrices.length > 0
+            ? `\nALTERNATIVE SEARCH PRICES FOUND: ${altPrices.map(p => '$' + p.toFixed(2)).join(', ')}`
+            : '';
+
         const deliberationPrompt = `You are a senior pricing strategist. The initial pricing analysis found INSUFFICIENT competitor data. You MUST now determine a good price using ALL available information and reasoning.
+
+${product.image ? 'IMPORTANT: A product image is attached. CAREFULLY EXAMINE IT to understand:' : 'NOTE: No product image available.'}
+${product.image ? '- What exactly is this product?' : ''}
+${product.image ? '- Quality indicators (materials, craftsmanship, brand marks)' : ''}
+${product.image ? '- Size and complexity' : ''}
+${product.image ? '- Whether it appears import/domestic/heady quality' : ''}
+${product.image ? '- Any features that would affect pricing' : ''}
 
 PRODUCT DETAILS:
 - Title: ${product.title}
@@ -1826,6 +1840,7 @@ PRODUCT DETAILS:
 - Current Price: $${currentPrice.toFixed(2)}
 - Cost: ${cost > 0 ? '$' + cost.toFixed(2) : 'Unknown'}
 - Compare At: ${variant.compareAtPrice ? '$' + variant.compareAtPrice.toFixed(2) : 'None'}
+${altPriceInfo}
 
 INITIAL ANALYSIS RESULT:
 - Suggested: $${initialAnalysis.suggestedPrice?.toFixed(2) || 'None'}
@@ -1835,31 +1850,37 @@ INITIAL ANALYSIS RESULT:
 
 YOUR TASK - DELIBERATE AND FIND THE RIGHT PRICE:
 
-1. COST-BASED ANALYSIS (if cost available):
+1. VISUAL ANALYSIS (if image provided):
+   - Study the image carefully
+   - Assess quality, materials, craftsmanship
+   - Look for brand marks, artist signatures
+   - Estimate production complexity
+
+2. COST-BASED ANALYSIS (if cost available):
    - What markup makes sense for this product category?
    - Import items: typically 2-4x markup
    - Domestic items: typically 2-3x markup
    - Heady/art items: typically 3-10x markup depending on artist
    - Calculate: what price gives reasonable margin?
 
-2. CATEGORY NORMS:
+3. CATEGORY NORMS:
    - What do similar ${productIdentity.productType || 'products'} typically sell for?
    - Consider the quality tier: ${originTier} items have expected price ranges
    - Import ${productIdentity.productType}: usually $5-50
    - Domestic ${productIdentity.productType}: usually $20-150
    - Heady ${productIdentity.productType}: usually $50-500+
 
-3. CURRENT PRICE EVALUATION:
+4. CURRENT PRICE EVALUATION:
    - Is $${currentPrice.toFixed(2)} reasonable for this product?
    - Does it align with the quality tier?
    - Would a customer feel it's fair value?
 
-4. MARGIN REQUIREMENTS:
+5. MARGIN REQUIREMENTS:
    - Minimum acceptable margin is 20% or $3
    - What's the floor price based on cost?
 
-5. FINAL DETERMINATION:
-   - Weigh all factors above
+6. FINAL DETERMINATION:
+   - Weigh all factors above (especially visual analysis if image provided)
    - Make a decisive recommendation
    - You MUST provide a price - don't give up
 
@@ -1868,6 +1889,7 @@ Respond in JSON:
     "deliberatedPrice": <number - YOUR FINAL PRICE RECOMMENDATION>,
     "confidence": "high" | "medium" | "low",
     "confidenceReason": "<why this confidence level>",
+    "visualAnalysis": "<what you observed in the image - quality, materials, features>",
     "reasoning": {
         "costAnalysis": "<your cost-based reasoning>",
         "categoryNorms": "<what similar items typically cost>",
@@ -1881,6 +1903,30 @@ Respond in JSON:
     "suggestedAction": "keep" | "increase" | "decrease"
 }`;
 
+        // Build message content - include image if available for visual analysis
+        const messageContent = [];
+
+        messageContent.push({
+            type: 'text',
+            text: deliberationPrompt
+        });
+
+        // Add product image for visual analysis during deliberation
+        if (product.image) {
+            let imageUrl = product.image;
+            if (imageUrl.startsWith('//')) {
+                imageUrl = 'https:' + imageUrl;
+            }
+            // Use full size for detailed analysis
+            imageUrl = imageUrl.replace(/_\d+x\d*\./, '.');
+
+            messageContent.push({
+                type: 'image_url',
+                image_url: { url: imageUrl, detail: 'high' }
+            });
+            console.log(`[${product.title}] Including image in deliberation for visual analysis`);
+        }
+
         try {
             const res = await fetch('https://api.openai.com/v1/chat/completions', {
                 method: 'POST',
@@ -1893,9 +1939,9 @@ Respond in JSON:
                     messages: [
                         {
                             role: 'system',
-                            content: `You are an expert pricing strategist who NEVER gives up. When competitor data is unavailable, you use cost analysis, category knowledge, and business logic to determine optimal pricing. You MUST always provide a concrete price recommendation.`
+                            content: `You are an expert pricing strategist who NEVER gives up. When competitor data is unavailable, you use visual analysis of the product image, cost analysis, category knowledge, and business logic to determine optimal pricing. You MUST always provide a concrete price recommendation. If an image is provided, study it CAREFULLY for quality indicators.`
                         },
-                        { role: 'user', content: deliberationPrompt }
+                        { role: 'user', content: messageContent }
                     ],
                     temperature: 0.6,
                     max_tokens: 1500,
@@ -2118,11 +2164,20 @@ Respond in JSON:
                 `;
             }
 
+            // Product image thumbnail
+            const imageUrl = product.image ? product.image.replace(/\.([^.]+)$/, '_100x100.$1') : null;
+
             return `
                 <tr class="border-b border-gray-700 hover:bg-gray-800/50 ${state.selectedProducts.has(product.id) ? 'bg-blue-900/20' : ''}">
                     <td class="px-4 py-3">
                         <input type="checkbox" class="product-checkbox rounded bg-gray-700 border-gray-600"
                             data-id="${product.id}" ${state.selectedProducts.has(product.id) ? 'checked' : ''}>
+                    </td>
+                    <td class="px-2 py-2">
+                        ${imageUrl
+                            ? `<img src="${imageUrl}" alt="" class="w-12 h-12 object-cover rounded cursor-pointer hover:opacity-80" onclick="showProductDetail('${product.id}')" loading="lazy">`
+                            : `<div class="w-12 h-12 bg-gray-700 rounded flex items-center justify-center text-gray-500 text-xs">No img</div>`
+                        }
                     </td>
                     <td class="px-4 py-3 cursor-pointer" onclick="showProductDetail('${product.id}')">
                         <div class="font-medium">${product.title}</div>
@@ -2437,6 +2492,51 @@ Respond in JSON:
         document.getElementById('modal-product-title').textContent = product.title;
 
         let content = '';
+
+        // Product image and basic info header
+        const productImage = product.image ? product.image.replace(/\.([^.]+)$/, '_400x400.$1') : null;
+        content += `
+            <div class="flex gap-6 mb-6">
+                <div class="flex-shrink-0">
+                    ${productImage
+                        ? `<img src="${productImage}" alt="${product.title}" class="w-32 h-32 object-cover rounded-lg border border-gray-700">`
+                        : `<div class="w-32 h-32 bg-gray-700 rounded-lg flex items-center justify-center text-gray-500">No image</div>`
+                    }
+                </div>
+                <div class="flex-1">
+                    <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+                        <div>
+                            <span class="text-gray-500">Vendor:</span>
+                            <span class="ml-2">${product.vendor || 'Unknown'}</span>
+                        </div>
+                        <div>
+                            <span class="text-gray-500">Type:</span>
+                            <span class="ml-2">${product.productType || 'Unknown'}</span>
+                        </div>
+                        <div>
+                            <span class="text-gray-500">SKU:</span>
+                            <span class="ml-2 font-mono text-xs">${variant.sku || 'None'}</span>
+                        </div>
+                        <div>
+                            <span class="text-gray-500">Handle:</span>
+                            <span class="ml-2 font-mono text-xs">${product.handle || 'None'}</span>
+                        </div>
+                        ${product.tags ? `
+                        <div class="col-span-2">
+                            <span class="text-gray-500">Tags:</span>
+                            <span class="ml-2 text-xs">${product.tags}</span>
+                        </div>
+                        ` : ''}
+                    </div>
+                    ${product.description ? `
+                    <div class="mt-3">
+                        <span class="text-gray-500 text-sm">Description:</span>
+                        <p class="text-xs text-gray-400 mt-1 line-clamp-3">${(product.description || '').substring(0, 200)}${product.description?.length > 200 ? '...' : ''}</p>
+                    </div>
+                    ` : ''}
+                </div>
+            </div>
+        `;
 
         // Variants section (if multiple)
         if (product.variants.length > 1) {
