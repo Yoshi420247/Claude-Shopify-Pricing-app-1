@@ -181,6 +181,12 @@
                         </svg>
                         Export CSV
                     </button>
+                    <button onclick="clearAllSuggestions()" class="text-gray-400 hover:text-red-400 px-3 py-2 text-sm flex items-center gap-1" title="Clear all pricing suggestions">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                        </svg>
+                        Clear All
+                    </button>
                 </div>
 
                 <!-- Product Table -->
@@ -1184,9 +1190,10 @@ IMPORTANT: Determine if this is an import (China-made), domestic (USA-made), or 
     }
 
     // Step 2: Search and extract prices from competitor results
-    async function searchCompetitors(product, productIdentity, settings) {
+    async function searchCompetitors(product, productIdentity, settings, options = {}) {
         if (!settings.braveKey) throw new Error('Brave API key not configured');
 
+        const isDeep = options.deep || false;
         const allResults = [];
         const seenUrls = new Set();
 
@@ -1194,15 +1201,35 @@ IMPORTANT: Determine if this is an import (China-made), domestic (USA-made), or 
         const brand = product.vendor || productIdentity.brand || '';
         const productType = productIdentity.productType || '';
         const productName = productIdentity.identifiedAs || product.title;
+        const originTier = productIdentity.originTier || 'import';
 
-        const queries = [
+        // Build query list - more queries for deep mode
+        let queries = [
             // AI-generated queries first
             ...(productIdentity.searchQueries || []),
             // Specific product searches
             `"${product.title}" price`,
             `${brand} ${productType} buy`,
             `${productName} smoke shop price`,
-        ].filter(Boolean).slice(0, 4);
+        ];
+
+        // Deep mode: add more query variations
+        if (isDeep) {
+            const extraQueries = [
+                `${productName} head shop`,
+                `${productType} ${originTier === 'heady' ? 'art glass' : ''} price`,
+                `buy ${productName} online`,
+                `${brand} ${productName}`.trim(),
+                `${productType} retail price`,
+                `smoke shop ${productType}`,
+            ];
+            queries = [...queries, ...extraQueries];
+        }
+
+        queries = queries.filter(Boolean).slice(0, isDeep ? 10 : 4);
+        const resultsPerQuery = isDeep ? 15 : 10;
+
+        console.log(`[${isDeep ? 'DEEP' : 'Normal'}] Running ${queries.length} queries...`);
 
         // Search for results
         for (const query of queries) {
@@ -1210,7 +1237,7 @@ IMPORTANT: Determine if this is an import (China-made), domestic (USA-made), or 
                 const retailQuery = `${query} -wholesale -bulk -distributor -alibaba -dhgate -ebay`;
 
                 const res = await fetch(
-                    `${CORS_PROXY}https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(retailQuery)}&count=10`,
+                    `${CORS_PROXY}https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(retailQuery)}&count=${resultsPerQuery}`,
                     { headers: { 'X-Subscription-Token': settings.braveKey } }
                 );
 
@@ -1281,8 +1308,9 @@ IMPORTANT: Determine if this is an import (China-made), domestic (USA-made), or 
             }
         }
 
-        // For known retailers without snippet prices, try page fetch
-        const knownRetailersWithoutPrice = rawResults.filter(r => r.isKnownRetailer).slice(0, 5);
+        // For known retailers without snippet prices, try page fetch (more in deep mode)
+        const pageFetchLimit = isDeep ? 10 : 5;
+        const knownRetailersWithoutPrice = rawResults.filter(r => r.isKnownRetailer).slice(0, pageFetchLimit);
         for (const result of knownRetailersWithoutPrice) {
             try {
                 console.log(`  Fetching ${result.source}...`);
@@ -1794,19 +1822,21 @@ Instructions:
                 else marginClass = 'text-green-400';
             }
 
-            // Status badge
+            // Status badge - show deep analysis indicator
             let statusBadge = '';
+            const deepBadge = analysis?.isDeep ? '<span class="ml-1 text-purple-400" title="Deep analyzed">◆</span>' : '';
             if (analysis?.error) {
                 statusBadge = '<span class="px-2 py-1 text-xs rounded bg-red-900/50 text-red-400">Failed</span>';
             } else if (analysis?.applied) {
-                statusBadge = '<span class="px-2 py-1 text-xs rounded bg-green-900/50 text-green-400">Updated</span>';
+                statusBadge = `<span class="px-2 py-1 text-xs rounded bg-green-900/50 text-green-400">Updated${deepBadge}</span>`;
             } else if (analysis?.suggestedPrice) {
-                statusBadge = '<span class="px-2 py-1 text-xs rounded bg-blue-900/50 text-blue-400">Review</span>';
+                statusBadge = `<span class="px-2 py-1 text-xs rounded bg-blue-900/50 text-blue-400">Review${deepBadge}</span>`;
             } else if (analysis?.analyzing) {
                 const step = analysis.step || 'Analyzing...';
-                statusBadge = `<span class="px-2 py-1 text-xs rounded bg-yellow-900/50 text-yellow-400 animate-pulse-dot">${step}</span>`;
+                const isDeepAnalysis = analysis.isDeep ? 'bg-purple-900/50 text-purple-400' : 'bg-yellow-900/50 text-yellow-400';
+                statusBadge = `<span class="px-2 py-1 text-xs rounded ${isDeepAnalysis} animate-pulse-dot">${step}</span>`;
             } else {
-                statusBadge = '<span class="px-2 py-1 text-xs rounded bg-gray-700 text-gray-400">Analyze</span>';
+                statusBadge = '<span class="px-2 py-1 text-xs rounded bg-gray-700 text-gray-400">—</span>';
             }
 
             // Suggested price display
@@ -1821,19 +1851,30 @@ Instructions:
                 `;
             }
 
-            // Action buttons
+            // Action buttons with dropdown for more options
             let actionButtons = '';
             if (analysis?.error) {
-                actionButtons = `<button onclick="analyzeProduct('${product.id}')" class="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded">Retry</button>`;
+                actionButtons = `
+                    <button onclick="analyzeProduct('${product.id}')" class="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded">Retry</button>
+                    <button onclick="deepAnalyzeProduct('${product.id}')" class="px-3 py-1 text-xs bg-purple-600 hover:bg-purple-700 rounded" title="Deep search with more queries">Deep</button>
+                `;
             } else if (analysis?.suggestedPrice && !analysis.applied) {
                 actionButtons = `
                     <button onclick="acceptSuggestion('${product.id}')" class="px-3 py-1 text-xs bg-green-600 hover:bg-green-700 rounded">Accept</button>
                     <button onclick="showProductDetail('${product.id}')" class="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded">View</button>
+                    <button onclick="deepAnalyzeProduct('${product.id}')" class="px-3 py-1 text-xs bg-purple-600 hover:bg-purple-700 rounded" title="Re-analyze with deeper search">Deep</button>
+                    <button onclick="clearSuggestion('${product.id}')" class="px-2 py-1 text-xs text-gray-500 hover:text-red-400" title="Clear suggestion">✕</button>
                 `;
             } else if (analysis?.applied) {
-                actionButtons = `<button onclick="analyzeProduct('${product.id}')" class="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded">Re-analyze</button>`;
+                actionButtons = `
+                    <button onclick="analyzeProduct('${product.id}')" class="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded">Re-analyze</button>
+                    <button onclick="deepAnalyzeProduct('${product.id}')" class="px-3 py-1 text-xs bg-purple-600 hover:bg-purple-700 rounded" title="Deep search">Deep</button>
+                `;
             } else {
-                actionButtons = `<button onclick="analyzeProduct('${product.id}')" class="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-700 rounded">Analyze</button>`;
+                actionButtons = `
+                    <button onclick="analyzeProduct('${product.id}')" class="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-700 rounded">Analyze</button>
+                    <button onclick="deepAnalyzeProduct('${product.id}')" class="px-3 py-1 text-xs bg-purple-600 hover:bg-purple-700 rounded" title="Deep search with more queries">Deep</button>
+                `;
             }
 
             return `
@@ -1905,46 +1946,49 @@ Instructions:
     // ============================================================================
     // PRODUCT ANALYSIS
     // ============================================================================
-    async function analyzeProduct(productId) {
+    async function analyzeProduct(productId, options = {}) {
         const product = state.products.find(p => p.id == productId);
         if (!product) return;
 
         const settings = getSettings();
+        const isDeep = options.deep || false;
+        const modeLabel = isDeep ? 'DEEP ' : '';
 
         // Update UI to show analyzing
-        state.analysisCache[productId] = { analyzing: true, step: 'Identifying product...' };
+        state.analysisCache[productId] = { analyzing: true, step: `${modeLabel}Identifying product...`, isDeep };
         renderProducts();
 
         try {
             // Step 1: Identify product using AI + image analysis
-            console.log(`[${product.title}] Step 1: Identifying product...`);
+            console.log(`[${product.title}] ${modeLabel}Step 1: Identifying product...`);
             const productIdentity = await identifyProduct(product, settings);
             console.log(`[${product.title}] Identified as: ${productIdentity.identifiedAs}`);
 
-            state.analysisCache[productId] = { analyzing: true, step: 'Extracting competitor prices...' };
+            state.analysisCache[productId] = { analyzing: true, step: `${modeLabel}Searching competitors...`, isDeep };
             renderProducts();
 
             // Step 2: Search for competitors and extract verified prices
-            console.log(`[${product.title}] Step 2: Searching and extracting prices...`);
-            const competitorData = await searchCompetitors(product, productIdentity, settings);
+            console.log(`[${product.title}] ${modeLabel}Step 2: Searching and extracting prices...`);
+            const competitorData = await searchCompetitors(product, productIdentity, settings, { deep: isDeep });
             console.log(`[${product.title}] Found ${competitorData.competitors.length} prices + ${(competitorData.rawResults || []).length} raw results from ${competitorData.queries.length} queries`);
 
-            state.analysisCache[productId] = { analyzing: true, step: 'Analyzing pricing...' };
+            state.analysisCache[productId] = { analyzing: true, step: `${modeLabel}Analyzing pricing...`, isDeep };
             renderProducts();
 
             // Step 3: AI analysis with retail focus and fuzzy matching
-            console.log(`[${product.title}] Step 3: Analyzing pricing...`);
+            console.log(`[${product.title}] ${modeLabel}Step 3: Analyzing pricing...`);
             const analysis = await analyzeWithAI(product, competitorData, productIdentity, settings);
             console.log(`[${product.title}] Suggested price: $${analysis.suggestedPrice?.toFixed(2)}`);
 
             // Store result
             state.analysisCache[productId] = {
                 ...analysis,
-                applied: false
+                applied: false,
+                isDeep: isDeep
             };
 
             localStorage.setItem('oilslick_analysis', JSON.stringify(state.analysisCache));
-            logActivity(`Analysis complete: ${product.title} → $${analysis.suggestedPrice?.toFixed(2) || 'N/A'} (${analysis.confidence} confidence, ${analysis.competitorAnalysis?.retailCount || 0} retail competitors)`);
+            logActivity(`${modeLabel}Analysis complete: ${product.title} → $${analysis.suggestedPrice?.toFixed(2) || 'N/A'} (${analysis.confidence} confidence, ${analysis.competitorAnalysis?.retailCount || 0} retail competitors)`);
 
         } catch (e) {
             console.error('Analysis error:', e);
@@ -1954,6 +1998,34 @@ Instructions:
 
         renderProducts();
         updateDashboard();
+    }
+
+    // Deep analysis with more search queries and page fetches
+    async function deepAnalyzeProduct(productId) {
+        return analyzeProduct(productId, { deep: true });
+    }
+
+    // Clear suggestion for a product and optionally re-analyze
+    function clearSuggestion(productId, reanalyze = false) {
+        delete state.analysisCache[productId];
+        localStorage.setItem('oilslick_analysis', JSON.stringify(state.analysisCache));
+        renderProducts();
+        updateDashboard();
+        showToast('Suggestion cleared', 'success');
+
+        if (reanalyze) {
+            analyzeProduct(productId);
+        }
+    }
+
+    // Clear all suggestions
+    function clearAllSuggestions() {
+        if (!confirm('Clear all pricing suggestions? This cannot be undone.')) return;
+        state.analysisCache = {};
+        localStorage.setItem('oilslick_analysis', JSON.stringify(state.analysisCache));
+        renderProducts();
+        updateDashboard();
+        showToast('All suggestions cleared', 'success');
     }
 
     async function analyzeSelected() {
@@ -2226,12 +2298,24 @@ Instructions:
                             </div>
                         </div>
                         <p class="text-sm text-gray-300 mb-4">${analysis.summary}</p>
-                        <div class="flex gap-2">
+                        <div class="flex flex-wrap gap-2">
                             ${!analysis.applied ? `
                                 <button onclick="acceptSuggestion('${productId}'); closeModal();" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded text-sm">Accept</button>
                                 <button onclick="editAndAccept('${productId}')" class="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded text-sm">Edit & Accept</button>
                                 <button onclick="dismissSuggestion('${productId}')" class="px-4 py-2 text-gray-400 hover:text-white text-sm">Dismiss</button>
                             ` : '<span class="text-green-400 text-sm">Price updated</span>'}
+                        </div>
+                        <div class="flex gap-2 mt-3 pt-3 border-t border-gray-600">
+                            <button onclick="closeModal(); deepAnalyzeProduct('${productId}');" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 rounded text-xs flex items-center gap-1">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                                Deep Re-analyze
+                            </button>
+                            <button onclick="closeModal(); clearSuggestion('${productId}', true);" class="px-3 py-1.5 bg-gray-600 hover:bg-gray-500 rounded text-xs">
+                                Clear & Re-analyze
+                            </button>
+                            <button onclick="closeModal(); clearSuggestion('${productId}');" class="px-3 py-1.5 text-gray-400 hover:text-red-400 text-xs">
+                                Clear Suggestion
+                            </button>
                         </div>
                     </div>
                     <div class="bg-gray-700/50 rounded-lg p-4">
