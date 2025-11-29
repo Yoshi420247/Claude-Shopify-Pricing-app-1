@@ -844,78 +844,243 @@
         }
     }
 
-    async function searchCompetitors(productTitle, productType, niche) {
-        const settings = getSettings();
-        if (!settings.braveKey) throw new Error('Brave API key not configured');
+    // Known wholesale/distributor domains to exclude
+    const WHOLESALE_DOMAINS = [
+        'alibaba.com', 'dhgate.com', 'made-in-china.com', 'globalsources.com',
+        'wholesale', 'distributor', 'b2b', 'bulk', 'trade', 'reseller',
+        'indiamart.com', '1688.com', 'ec21.com', 'tradekey.com',
+        'wholesalecentral.com', 'dollardays.com', 'kole.com',
+        'chinabrands.com', 'lightinthebox.com'
+    ];
 
-        // Build search query
-        const searchQuery = `${productTitle} price buy -site:oil-slick-pad.com`;
+    // Known retail smoke/head shop domains (prioritize these)
+    const RETAIL_SMOKE_SHOPS = [
+        'smokea.com', 'dankgeek.com', 'everythingfor420.com', 'grasscity.com',
+        'dailyhighclub.com', 'brotherswithglass.com', 'smokecartel.com',
+        'headshop.com', 'thickassglass.com', 'gogopipes.com', 'kings-pipe.com',
+        'tokeplanet.com', 'shopstaywild.com', 'paborito.com', 'stoners.com',
+        'badassglass.com', 'dankstop.com', 'hemper.co', 'ssmokeshop.com',
+        'worldofbongs.com', 'bongoutlet.com', 'aqualabtechnologies.com'
+    ];
 
-        const res = await fetch(
-            `${CORS_PROXY}https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(searchQuery)}&count=20`,
-            { headers: { 'X-Subscription-Token': settings.braveKey } }
-        );
+    // Step 1: Identify product using AI + image analysis
+    async function identifyProduct(product, settings) {
+        const messages = [
+            {
+                role: 'system',
+                content: `You are an expert in smoke shop products, heady glass, dab tools, and concentrate accessories.
+Your task is to identify what a product actually is, even if the title is incomplete, uses abbreviations, or jargon.
+
+Analyze the product information and image (if provided) to determine:
+1. What type of product this is (e.g., dab tool, carb cap, banger, rig, pipe, grinder, tray, etc.)
+2. The brand if identifiable
+3. Key identifying features (material, size, color, style)
+4. What search terms would find this EXACT product or very similar products at RETAIL smoke shops
+
+Respond in JSON:
+{
+  "productType": "specific product category",
+  "brand": "brand name or null",
+  "identifiedAs": "your best guess of what this product is in plain English",
+  "keyFeatures": ["feature1", "feature2"],
+  "searchQueries": ["query1", "query2", "query3"],
+  "confidence": "high" | "medium" | "low",
+  "notes": "any relevant observations"
+}`
+            }
+        ];
+
+        // Build user message with optional image
+        const userContent = [];
+
+        // Add text description
+        userContent.push({
+            type: 'text',
+            text: `Identify this product:
+Title: ${product.title}
+Vendor/Brand: ${product.vendor || 'Unknown'}
+Product Type: ${product.productType || 'Unknown'}
+Tags: ${product.tags || 'None'}
+SKU: ${product.variants[0]?.sku || 'Unknown'}
+Price: $${product.variants[0]?.price?.toFixed(2) || 'Unknown'}`
+        });
+
+        // Add image if available
+        if (product.image) {
+            userContent.push({
+                type: 'image_url',
+                image_url: { url: product.image, detail: 'low' }
+            });
+        }
+
+        messages.push({ role: 'user', content: userContent });
+
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${settings.openaiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: 'gpt-4o',
+                messages: messages,
+                temperature: 0.2,
+                max_tokens: 500,
+                response_format: { type: 'json_object' }
+            })
+        });
 
         if (!res.ok) {
-            const errText = await res.text();
-            throw new Error(`Brave search error: ${res.status} - ${errText.slice(0, 100)}`);
+            const err = await res.json();
+            throw new Error(err.error?.message || `OpenAI error: ${res.status}`);
         }
 
         const data = await res.json();
-        return data.web?.results || [];
+        return JSON.parse(data.choices[0].message.content);
     }
 
-    async function analyzeWithAI(product, competitorData, settings) {
+    // Step 2: Search for competitors with multiple strategies
+    async function searchCompetitors(product, productIdentity, settings) {
+        if (!settings.braveKey) throw new Error('Brave API key not configured');
+
+        const allResults = [];
+        const seenUrls = new Set();
+
+        // Generate search queries - retail focused
+        const queries = [
+            // Use AI-generated search queries
+            ...(productIdentity.searchQueries || []),
+            // Fallback queries
+            `${product.title} smoke shop`,
+            `${product.vendor || ''} ${productIdentity.productType || ''} buy online`.trim(),
+            `${productIdentity.identifiedAs || product.title} head shop`
+        ].filter(Boolean).slice(0, 4); // Limit to 4 queries
+
+        for (const query of queries) {
+            try {
+                // Add retail-focused terms and exclude wholesale
+                const retailQuery = `${query} -wholesale -bulk -distributor -alibaba -dhgate`;
+
+                const res = await fetch(
+                    `${CORS_PROXY}https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(retailQuery)}&count=15`,
+                    { headers: { 'X-Subscription-Token': settings.braveKey } }
+                );
+
+                if (res.ok) {
+                    const data = await res.json();
+                    const results = data.web?.results || [];
+
+                    for (const r of results) {
+                        if (!seenUrls.has(r.url)) {
+                            seenUrls.add(r.url);
+                            allResults.push({
+                                ...r,
+                                searchQuery: query
+                            });
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn(`Search failed for query "${query}":`, e);
+            }
+        }
+
+        return {
+            results: allResults,
+            queries: queries
+        };
+    }
+
+    // Step 3: Analyze competitors and generate pricing recommendation
+    async function analyzeWithAI(product, competitorData, productIdentity, settings) {
         if (!settings.openaiKey) throw new Error('OpenAI API key not configured');
 
-        const variant = product.variants[0]; // Primary variant
+        const variant = product.variants[0];
         const cost = variant.cost || 0;
         const currentPrice = variant.price;
 
-        const systemPrompt = `You are a pricing analyst for an online smoke shop called Oil Slick Pad that sells heady glass, dab tools, and concentrate accessories.
+        const systemPrompt = `You are a pricing analyst for Oil Slick Pad, an online smoke shop selling heady glass, dab tools, and concentrate accessories.
 ${settings.productNiche ? `Store context: ${settings.productNiche}` : ''}
 
-Your task is to analyze competitor pricing and recommend an optimal price for a product.
+CRITICAL INSTRUCTIONS:
+1. ONLY use prices from RETAIL smoke shops and head shops (online stores that sell to consumers)
+2. EXCLUDE all wholesale, distributor, B2B, bulk pricing, Alibaba, DHGate, and similar sources
+3. EXCLUDE marketplace listings (eBay, Amazon marketplace sellers, Etsy) unless from verified retailers
+4. EXCLUDE out-of-stock items or discontinued products
+5. Use FUZZY MATCHING - products don't need exact title matches. Match by:
+   - Same product type/category
+   - Same or equivalent brand
+   - Similar size/capacity/features
+   - Comparable quality tier
+
+Known retail smoke shops to trust: ${RETAIL_SMOKE_SHOPS.slice(0, 10).join(', ')}
+Known wholesale domains to EXCLUDE: ${WHOLESALE_DOMAINS.slice(0, 10).join(', ')}
+
+Product was identified as: ${productIdentity.identifiedAs || 'Unknown'}
+Product type: ${productIdentity.productType || 'Unknown'}
+Key features: ${(productIdentity.keyFeatures || []).join(', ')}
 
 Pricing Rules:
-- Minimum margin: ${settings.minMargin || 20}% or $${settings.minMarginDollars || 3}
+- Minimum margin: ${settings.minMargin || 20}% or $${settings.minMarginDollars || 3} (whichever is higher)
 - Clearance minimum margin: ${settings.clearanceMargin || 5}%
 - ${settings.respectMsrp ? 'Never exceed MSRP' : 'May exceed MSRP if justified'}
-- Max ${settings.maxAbove || 5}% above highest competitor
+- Max ${settings.maxAbove || 5}% above highest retail competitor
 - Max price increase: ${settings.maxIncrease || 10}%
 - Max price decrease: ${settings.maxDecrease || 15}%
 - Rounding style: ${settings.roundingStyle || 'psychological'}
 
-Respond in JSON format only:
+Respond in JSON format:
 {
   "suggestedPrice": number,
   "confidence": "high" | "medium" | "low",
-  "confidenceReason": "string",
-  "summary": "string (1-2 sentences explaining the recommendation)",
-  "reasoning": ["array", "of", "reasoning", "steps"],
+  "confidenceReason": "string explaining confidence level",
+  "summary": "1-2 sentence recommendation explanation",
+  "reasoning": ["step1", "step2", "step3"],
+  "productMatch": {
+    "identifiedAs": "what you believe this product is",
+    "matchConfidence": "high" | "medium" | "low",
+    "matchNotes": "notes on product identification"
+  },
   "competitorAnalysis": {
-    "kept": [{"source": "string", "price": number, "reason": "string"}],
-    "excluded": [{"source": "string", "reason": "string"}],
+    "kept": [{"source": "domain/store name", "price": number, "productMatch": "exact|similar|equivalent", "reason": "why kept"}],
+    "excluded": [{"source": "domain", "reason": "wholesale|marketplace|out of stock|different product|etc"}],
     "low": number | null,
     "median": number | null,
-    "high": number | null
+    "high": number | null,
+    "retailCount": number
   },
   "priceFloor": number,
-  "priceCeiling": number
+  "priceCeiling": number,
+  "marketPosition": "below market" | "at market" | "above market" | "premium" | "unknown"
 }`;
 
-        const userPrompt = `Analyze pricing for:
-Product: ${product.title}
-Type: ${product.productType || 'Unknown'}
-Vendor: ${product.vendor || 'Unknown'}
-Current Price: $${currentPrice.toFixed(2)}
-Cost: ${cost > 0 ? '$' + cost.toFixed(2) : 'Unknown'}
-${variant.compareAtPrice ? `MSRP/Compare At: $${variant.compareAtPrice.toFixed(2)}` : ''}
+        const userPrompt = `Analyze pricing for this product:
 
-Competitor search results:
-${competitorData.map(c => `- ${c.title}: ${c.url}`).join('\n') || 'No competitors found'}
+PRODUCT INFO:
+- Title: ${product.title}
+- Vendor: ${product.vendor || 'Unknown'}
+- Type: ${product.productType || 'Unknown'}
+- Current Price: $${currentPrice.toFixed(2)}
+- Cost: ${cost > 0 ? '$' + cost.toFixed(2) : 'Unknown'}
+${variant.compareAtPrice ? `- MSRP/Compare At: $${variant.compareAtPrice.toFixed(2)}` : ''}
 
-Analyze the competitors, filter out irrelevant results (marketplace listings, out of stock, different products), and provide a pricing recommendation.`;
+AI PRODUCT IDENTIFICATION:
+- Identified as: ${productIdentity.identifiedAs || 'Unknown'}
+- Product type: ${productIdentity.productType || 'Unknown'}
+- Brand: ${productIdentity.brand || 'Unknown'}
+- Key features: ${(productIdentity.keyFeatures || []).join(', ')}
+- Identification confidence: ${productIdentity.confidence || 'Unknown'}
+
+SEARCH RESULTS (analyze each - keep only retail, exclude wholesale):
+${competitorData.results.map((c, i) => `${i + 1}. "${c.title}" - ${c.url}${c.description ? `\n   ${c.description.slice(0, 150)}` : ''}`).join('\n\n') || 'No results found'}
+
+Instructions:
+1. First, determine which search results are from legitimate RETAIL smoke/head shops
+2. Exclude ANY wholesale, distributor, bulk, or B2B sources
+3. Use fuzzy matching - find products that are the same or very similar
+4. Extract prices from the retail results (look for price patterns in titles/descriptions)
+5. Calculate competitive pricing based ONLY on retail competitors
+6. If no valid retail competitors found, recommend keeping current price with low confidence`;
 
         const res = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
@@ -930,6 +1095,7 @@ Analyze the competitors, filter out irrelevant results (marketplace listings, ou
                     { role: 'user', content: userPrompt }
                 ],
                 temperature: 0.3,
+                max_tokens: 1500,
                 response_format: { type: 'json_object' }
             })
         });
@@ -944,7 +1110,8 @@ Analyze the competitors, filter out irrelevant results (marketplace listings, ou
 
         return {
             ...analysis,
-            searchQuery: `${product.title} price buy`,
+            productIdentity,
+            searchQueries: competitorData.queries,
             analyzedAt: new Date().toISOString()
         };
     }
@@ -1090,7 +1257,8 @@ Analyze the competitors, filter out irrelevant results (marketplace listings, ou
             } else if (analysis?.suggestedPrice) {
                 statusBadge = '<span class="px-2 py-1 text-xs rounded bg-blue-900/50 text-blue-400">Review</span>';
             } else if (analysis?.analyzing) {
-                statusBadge = '<span class="px-2 py-1 text-xs rounded bg-yellow-900/50 text-yellow-400 animate-pulse-dot">Analyzing...</span>';
+                const step = analysis.step || 'Analyzing...';
+                statusBadge = `<span class="px-2 py-1 text-xs rounded bg-yellow-900/50 text-yellow-400 animate-pulse-dot">${step}</span>`;
             } else {
                 statusBadge = '<span class="px-2 py-1 text-xs rounded bg-gray-700 text-gray-400">Analyze</span>';
             }
@@ -1198,19 +1366,30 @@ Analyze the competitors, filter out irrelevant results (marketplace listings, ou
         const settings = getSettings();
 
         // Update UI to show analyzing
-        state.analysisCache[productId] = { analyzing: true };
+        state.analysisCache[productId] = { analyzing: true, step: 'Identifying product...' };
         renderProducts();
 
         try {
-            // Step 1: Search competitors
-            const competitors = await searchCompetitors(
-                product.title,
-                product.productType,
-                settings.productNiche
-            );
+            // Step 1: Identify product using AI + image analysis
+            console.log(`[${product.title}] Step 1: Identifying product...`);
+            const productIdentity = await identifyProduct(product, settings);
+            console.log(`[${product.title}] Identified as: ${productIdentity.identifiedAs}`);
 
-            // Step 2: AI analysis
-            const analysis = await analyzeWithAI(product, competitors, settings);
+            state.analysisCache[productId] = { analyzing: true, step: 'Searching competitors...' };
+            renderProducts();
+
+            // Step 2: Search for competitors with multiple strategies
+            console.log(`[${product.title}] Step 2: Searching competitors...`);
+            const competitorData = await searchCompetitors(product, productIdentity, settings);
+            console.log(`[${product.title}] Found ${competitorData.results.length} results from ${competitorData.queries.length} queries`);
+
+            state.analysisCache[productId] = { analyzing: true, step: 'Analyzing pricing...' };
+            renderProducts();
+
+            // Step 3: AI analysis with retail focus and fuzzy matching
+            console.log(`[${product.title}] Step 3: Analyzing pricing...`);
+            const analysis = await analyzeWithAI(product, competitorData, productIdentity, settings);
+            console.log(`[${product.title}] Suggested price: $${analysis.suggestedPrice?.toFixed(2)}`);
 
             // Store result
             state.analysisCache[productId] = {
@@ -1219,7 +1398,7 @@ Analyze the competitors, filter out irrelevant results (marketplace listings, ou
             };
 
             localStorage.setItem('oilslick_analysis', JSON.stringify(state.analysisCache));
-            logActivity(`Analysis complete: ${product.title} - suggested $${analysis.suggestedPrice?.toFixed(2) || 'N/A'}`);
+            logActivity(`Analysis complete: ${product.title} → $${analysis.suggestedPrice?.toFixed(2) || 'N/A'} (${analysis.confidence} confidence, ${analysis.competitorAnalysis?.retailCount || 0} retail competitors)`);
 
         } catch (e) {
             console.error('Analysis error:', e);
@@ -1413,6 +1592,52 @@ Analyze the competitors, filter out irrelevant results (marketplace listings, ou
             const delta = analysis.suggestedPrice - variant.price;
             const deltaPct = (delta / variant.price) * 100;
 
+            // Product Identification Section (new)
+            if (analysis.productIdentity || analysis.productMatch) {
+                const identity = analysis.productIdentity || {};
+                const match = analysis.productMatch || {};
+                content += `
+                    <div class="bg-blue-900/20 border border-blue-800 rounded-lg p-4 mb-6">
+                        <h4 class="text-sm font-medium text-blue-400 mb-2">AI Product Identification</h4>
+                        <div class="grid grid-cols-2 gap-4 text-sm">
+                            <div>
+                                <span class="text-gray-500">Identified as:</span>
+                                <span class="ml-2 text-white">${identity.identifiedAs || match.identifiedAs || 'Unknown'}</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-500">Product type:</span>
+                                <span class="ml-2">${identity.productType || 'Unknown'}</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-500">Brand:</span>
+                                <span class="ml-2">${identity.brand || 'Unknown'}</span>
+                            </div>
+                            <div>
+                                <span class="text-gray-500">ID confidence:</span>
+                                <span class="ml-2 ${identity.confidence === 'high' ? 'text-green-400' : identity.confidence === 'medium' ? 'text-yellow-400' : 'text-gray-400'}">${identity.confidence || 'Unknown'}</span>
+                            </div>
+                        </div>
+                        ${identity.keyFeatures?.length ? `
+                            <div class="mt-2 text-sm">
+                                <span class="text-gray-500">Key features:</span>
+                                <span class="ml-2">${identity.keyFeatures.join(', ')}</span>
+                            </div>
+                        ` : ''}
+                        ${identity.notes ? `<div class="mt-2 text-xs text-gray-500">${identity.notes}</div>` : ''}
+                    </div>
+                `;
+            }
+
+            // Market Position Badge
+            const marketPositionColors = {
+                'below market': 'bg-green-900/50 text-green-400',
+                'at market': 'bg-gray-700 text-gray-300',
+                'above market': 'bg-yellow-900/50 text-yellow-400',
+                'premium': 'bg-purple-900/50 text-purple-400',
+                'unknown': 'bg-gray-700 text-gray-500'
+            };
+            const marketPosClass = marketPositionColors[analysis.marketPosition] || marketPositionColors['unknown'];
+
             content += `
                 <div class="grid grid-cols-2 gap-6 mb-6">
                     <div class="bg-gray-700/50 rounded-lg p-4">
@@ -1421,6 +1646,10 @@ Analyze the competitors, filter out irrelevant results (marketplace listings, ou
                             <div class="text-3xl font-semibold text-blue-400">$${analysis.suggestedPrice.toFixed(2)}</div>
                             <div class="text-sm ${delta >= 0 ? 'text-green-400' : 'text-red-400'}">
                                 ${delta >= 0 ? '+' : ''}$${delta.toFixed(2)} (${delta >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%)
+                            </div>
+                            <div class="flex items-center gap-2 mt-2">
+                                <span class="text-xs px-2 py-1 rounded ${marketPosClass}">${analysis.marketPosition || 'unknown'}</span>
+                                <span class="text-xs text-gray-500">${analysis.competitorAnalysis?.retailCount || 0} retail competitors</span>
                             </div>
                             <div class="text-xs text-gray-500 mt-1">
                                 Confidence: <span class="${analysis.confidence === 'high' ? 'text-green-400' : analysis.confidence === 'medium' ? 'text-yellow-400' : 'text-red-400'}">${analysis.confidence}</span>
@@ -1437,66 +1666,79 @@ Analyze the competitors, filter out irrelevant results (marketplace listings, ou
                         </div>
                     </div>
                     <div class="bg-gray-700/50 rounded-lg p-4">
-                        <h4 class="text-sm font-medium text-gray-400 mb-3">Analysis Details</h4>
+                        <h4 class="text-sm font-medium text-gray-400 mb-3">Retail Competitor Analysis</h4>
                         <div class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm mb-4">
                             <div class="text-gray-500">Price Floor:</div>
                             <div>$${analysis.priceFloor?.toFixed(2) || '—'}</div>
                             <div class="text-gray-500">Price Ceiling:</div>
                             <div>$${analysis.priceCeiling?.toFixed(2) || '—'}</div>
-                            <div class="text-gray-500">Competitor Low:</div>
+                            <div class="text-gray-500">Retail Low:</div>
                             <div>$${analysis.competitorAnalysis?.low?.toFixed(2) || '—'}</div>
-                            <div class="text-gray-500">Competitor Median:</div>
-                            <div>$${analysis.competitorAnalysis?.median?.toFixed(2) || '—'}</div>
-                            <div class="text-gray-500">Competitor High:</div>
+                            <div class="text-gray-500">Retail Median:</div>
+                            <div class="font-medium">$${analysis.competitorAnalysis?.median?.toFixed(2) || '—'}</div>
+                            <div class="text-gray-500">Retail High:</div>
                             <div>$${analysis.competitorAnalysis?.high?.toFixed(2) || '—'}</div>
                         </div>
                         <h5 class="text-xs font-medium text-gray-500 mb-2">AI Reasoning</h5>
-                        <ul class="text-sm text-gray-400 space-y-1">
+                        <ul class="text-sm text-gray-400 space-y-1 max-h-32 overflow-auto">
                             ${(analysis.reasoning || []).map(r => `<li class="flex"><span class="mr-2">•</span>${r}</li>`).join('')}
                         </ul>
                     </div>
                 </div>
             `;
 
-            // Competitor sources (collapsible)
+            // Competitor sources (collapsible) - now shows search queries used
             if (analysis.competitorAnalysis) {
                 content += `
                     <details class="mb-6">
                         <summary class="text-sm font-medium text-gray-400 cursor-pointer hover:text-white">
-                            Sources (${(analysis.competitorAnalysis.kept?.length || 0)} kept, ${(analysis.competitorAnalysis.excluded?.length || 0)} excluded)
+                            Sources (${(analysis.competitorAnalysis.kept?.length || 0)} retail kept, ${(analysis.competitorAnalysis.excluded?.length || 0)} excluded)
                         </summary>
                         <div class="mt-3 space-y-4">
-                            <div class="text-xs text-gray-500">Search query: "${analysis.searchQuery}"</div>
+                            <div class="text-xs text-gray-500">
+                                Search queries used: ${(analysis.searchQueries || []).map(q => `"${q}"`).join(', ') || 'N/A'}
+                            </div>
                             ${analysis.competitorAnalysis.kept?.length ? `
                                 <div>
-                                    <h5 class="text-xs font-medium text-gray-500 mb-2">Kept Sources</h5>
+                                    <h5 class="text-xs font-medium text-green-500 mb-2">Retail Sources Kept (${analysis.competitorAnalysis.kept.length})</h5>
                                     <table class="w-full text-sm">
+                                        <thead class="text-xs text-gray-500">
+                                            <tr>
+                                                <th class="text-left py-1">Store</th>
+                                                <th class="text-right py-1">Price</th>
+                                                <th class="text-center py-1">Match</th>
+                                                <th class="text-right py-1">Reason</th>
+                                            </tr>
+                                        </thead>
                                         <tbody>
                                             ${analysis.competitorAnalysis.kept.map(s => `
                                                 <tr class="border-b border-gray-700/50">
                                                     <td class="py-1 text-blue-400">${s.source}</td>
-                                                    <td class="py-1 text-right">$${s.price?.toFixed(2) || '—'}</td>
-                                                    <td class="py-1 text-gray-500 text-right">${s.reason}</td>
+                                                    <td class="py-1 text-right font-medium">$${s.price?.toFixed(2) || '—'}</td>
+                                                    <td class="py-1 text-center">
+                                                        <span class="text-xs px-1.5 py-0.5 rounded ${s.productMatch === 'exact' ? 'bg-green-900/50 text-green-400' : s.productMatch === 'similar' ? 'bg-blue-900/50 text-blue-400' : 'bg-gray-700 text-gray-400'}">${s.productMatch || '—'}</span>
+                                                    </td>
+                                                    <td class="py-1 text-gray-500 text-right text-xs">${s.reason}</td>
                                                 </tr>
                                             `).join('')}
                                         </tbody>
                                     </table>
                                 </div>
-                            ` : ''}
+                            ` : '<p class="text-sm text-gray-500">No valid retail competitors found</p>'}
                             ${analysis.competitorAnalysis.excluded?.length ? `
-                                <div>
-                                    <h5 class="text-xs font-medium text-gray-500 mb-2">Excluded Sources</h5>
-                                    <table class="w-full text-sm">
+                                <details class="mt-2">
+                                    <summary class="text-xs text-gray-500 cursor-pointer">Show excluded sources (${analysis.competitorAnalysis.excluded.length})</summary>
+                                    <table class="w-full text-sm mt-2">
                                         <tbody>
                                             ${analysis.competitorAnalysis.excluded.map(s => `
                                                 <tr class="border-b border-gray-700/50 text-gray-500">
-                                                    <td class="py-1">${s.source}</td>
-                                                    <td class="py-1 text-right">${s.reason}</td>
+                                                    <td class="py-1 text-xs">${s.source}</td>
+                                                    <td class="py-1 text-right text-xs text-red-400/70">${s.reason}</td>
                                                 </tr>
                                             `).join('')}
                                         </tbody>
                                     </table>
-                                </div>
+                                </details>
                             ` : ''}
                         </div>
                     </details>
