@@ -1748,6 +1748,192 @@ Instructions:
         };
     }
 
+    // Step 4: Alternative search strategies when initial search fails
+    async function tryAlternativeSearches(product, productIdentity, settings) {
+        const brand = product.vendor || productIdentity.brand || '';
+        const productType = productIdentity.productType || '';
+        const originTier = productIdentity.originTier || 'import';
+
+        // Generate broader/alternative queries
+        const alternativeQueries = [
+            // Category-based searches
+            `${productType} smoke shop`,
+            `${productType} head shop price`,
+            `buy ${productType} online`,
+            // Origin-tier specific
+            originTier === 'heady' ? 'heady glass art price' : null,
+            originTier === 'heady' ? 'glass pendant artist' : null,
+            originTier === 'domestic' ? 'american made glass' : null,
+            originTier === 'import' ? `cheap ${productType}` : null,
+            // Brand searches if available
+            brand ? `${brand} products` : null,
+            brand ? `${brand} ${productType}` : null,
+            // Generic category
+            `${productType} price range`,
+            `${productType} retail`
+        ].filter(Boolean);
+
+        const allResults = [];
+        const seenUrls = new Set();
+
+        for (const query of alternativeQueries.slice(0, 6)) {
+            try {
+                const res = await fetch(
+                    `${CORS_PROXY}https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query + ' -wholesale -bulk')}&count=10`,
+                    { headers: { 'X-Subscription-Token': settings.braveKey } }
+                );
+
+                if (res.ok) {
+                    const data = await res.json();
+                    for (const r of (data.web?.results || [])) {
+                        if (!seenUrls.has(r.url)) {
+                            seenUrls.add(r.url);
+                            const snippetPrice = extractPriceFromSnippet(`${r.title} ${r.description}`);
+                            allResults.push({
+                                ...r,
+                                price: snippetPrice,
+                                searchQuery: query
+                            });
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn(`Alt search failed: ${query}`);
+            }
+        }
+
+        return allResults;
+    }
+
+    // Step 5: Deep deliberation when competitor data is insufficient
+    async function deliberatePricing(product, initialAnalysis, competitorData, productIdentity, settings) {
+        const variant = product.variants[0];
+        const cost = variant.cost || 0;
+        const currentPrice = variant.price;
+        const originTier = productIdentity.originTier || 'unknown';
+
+        // Get description for context
+        const descText = (product.description || product.descriptionHtml?.replace(/<[^>]*>/g, ' ') || '').substring(0, 500);
+
+        const deliberationPrompt = `You are a senior pricing strategist. The initial pricing analysis found INSUFFICIENT competitor data. You MUST now determine a good price using ALL available information and reasoning.
+
+PRODUCT DETAILS:
+- Title: ${product.title}
+- Description: ${descText || 'None'}
+- Vendor: ${product.vendor || 'Unknown'}
+- Type: ${productIdentity.productType || product.productType || 'Unknown'}
+- Quality Tier: ${originTier.toUpperCase()}
+- Current Price: $${currentPrice.toFixed(2)}
+- Cost: ${cost > 0 ? '$' + cost.toFixed(2) : 'Unknown'}
+- Compare At: ${variant.compareAtPrice ? '$' + variant.compareAtPrice.toFixed(2) : 'None'}
+
+INITIAL ANALYSIS RESULT:
+- Suggested: $${initialAnalysis.suggestedPrice?.toFixed(2) || 'None'}
+- Confidence: ${initialAnalysis.confidence}
+- Competitors Found: ${initialAnalysis.competitorAnalysis?.retailCount || 0}
+- Reason: ${initialAnalysis.confidenceReason || 'Unknown'}
+
+YOUR TASK - DELIBERATE AND FIND THE RIGHT PRICE:
+
+1. COST-BASED ANALYSIS (if cost available):
+   - What markup makes sense for this product category?
+   - Import items: typically 2-4x markup
+   - Domestic items: typically 2-3x markup
+   - Heady/art items: typically 3-10x markup depending on artist
+   - Calculate: what price gives reasonable margin?
+
+2. CATEGORY NORMS:
+   - What do similar ${productIdentity.productType || 'products'} typically sell for?
+   - Consider the quality tier: ${originTier} items have expected price ranges
+   - Import ${productIdentity.productType}: usually $5-50
+   - Domestic ${productIdentity.productType}: usually $20-150
+   - Heady ${productIdentity.productType}: usually $50-500+
+
+3. CURRENT PRICE EVALUATION:
+   - Is $${currentPrice.toFixed(2)} reasonable for this product?
+   - Does it align with the quality tier?
+   - Would a customer feel it's fair value?
+
+4. MARGIN REQUIREMENTS:
+   - Minimum acceptable margin is 20% or $3
+   - What's the floor price based on cost?
+
+5. FINAL DETERMINATION:
+   - Weigh all factors above
+   - Make a decisive recommendation
+   - You MUST provide a price - don't give up
+
+Respond in JSON:
+{
+    "deliberatedPrice": <number - YOUR FINAL PRICE RECOMMENDATION>,
+    "confidence": "high" | "medium" | "low",
+    "confidenceReason": "<why this confidence level>",
+    "reasoning": {
+        "costAnalysis": "<your cost-based reasoning>",
+        "categoryNorms": "<what similar items typically cost>",
+        "currentPriceAssessment": "<is current price reasonable?>",
+        "marginCheck": "<does price meet margin requirements?>",
+        "finalDecision": "<summary of your decision>"
+    },
+    "priceFloor": <minimum acceptable price>,
+    "priceCeiling": <maximum reasonable price>,
+    "alternativeConsiderations": "<any other factors considered>",
+    "suggestedAction": "keep" | "increase" | "decrease"
+}`;
+
+        try {
+            const res = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${settings.openaiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: 'gpt-4o',
+                    messages: [
+                        {
+                            role: 'system',
+                            content: `You are an expert pricing strategist who NEVER gives up. When competitor data is unavailable, you use cost analysis, category knowledge, and business logic to determine optimal pricing. You MUST always provide a concrete price recommendation.`
+                        },
+                        { role: 'user', content: deliberationPrompt }
+                    ],
+                    temperature: 0.6,
+                    max_tokens: 1500,
+                    response_format: { type: 'json_object' }
+                })
+            });
+
+            if (!res.ok) {
+                console.warn('Deliberation API call failed');
+                return initialAnalysis;
+            }
+
+            const data = await res.json();
+            const deliberation = JSON.parse(data.choices[0].message.content);
+
+            console.log(`[${product.title}] Deliberation result: $${deliberation.deliberatedPrice}`);
+
+            // Merge deliberation into analysis
+            return {
+                ...initialAnalysis,
+                suggestedPrice: deliberation.deliberatedPrice,
+                confidence: deliberation.confidence,
+                confidenceReason: deliberation.confidenceReason,
+                priceFloor: deliberation.priceFloor || initialAnalysis.priceFloor,
+                priceCeiling: deliberation.priceCeiling || initialAnalysis.priceCeiling,
+                reasoning: [
+                    ...(initialAnalysis.reasoning || []),
+                    `DELIBERATION: ${deliberation.reasoning?.finalDecision || 'Price determined through deep analysis'}`
+                ],
+                deliberation: deliberation,
+                wasDeliberated: true
+            };
+        } catch (e) {
+            console.error('Deliberation error:', e);
+            return initialAnalysis;
+        }
+    }
+
     // ============================================================================
     // PRODUCT TABLE RENDERING
     // ============================================================================
@@ -2033,8 +2219,37 @@ Instructions:
 
             // Step 3: AI analysis with retail focus and fuzzy matching
             console.log(`[${product.title}] ${modeLabel}Step 3: Analyzing pricing...`);
-            const analysis = await analyzeWithAI(product, competitorData, productIdentity, settings);
-            console.log(`[${product.title}] Suggested price: $${analysis.suggestedPrice?.toFixed(2)}`);
+            let analysis = await analyzeWithAI(product, competitorData, productIdentity, settings);
+            console.log(`[${product.title}] Initial suggested price: $${analysis.suggestedPrice?.toFixed(2)} (${analysis.confidence} confidence, ${analysis.competitorAnalysis?.retailCount || 0} competitors)`);
+
+            // Step 4: If insufficient data, try alternative searches
+            const hasInsufficientData = (analysis.competitorAnalysis?.retailCount || 0) < 2;
+            const hasLowConfidence = analysis.confidence === 'low';
+
+            if (hasInsufficientData || hasLowConfidence) {
+                console.log(`[${product.title}] Step 4: Trying alternative search strategies...`);
+                state.analysisCache[productId] = { analyzing: true, step: 'Trying alternative searches...', isDeep };
+                renderProducts();
+
+                const altResults = await tryAlternativeSearches(product, productIdentity, settings);
+                const altPrices = altResults.filter(r => r.price).map(r => r.price);
+                console.log(`[${product.title}] Alternative search found ${altPrices.length} prices: ${altPrices.map(p => '$' + p.toFixed(2)).join(', ')}`);
+
+                // If we found new prices, add them to context for deliberation
+                if (altPrices.length > 0) {
+                    analysis.alternativePricesFound = altPrices;
+                }
+            }
+
+            // Step 5: Deep deliberation if still uncertain
+            if (hasInsufficientData || hasLowConfidence || !analysis.suggestedPrice) {
+                console.log(`[${product.title}] Step 5: Deliberating on pricing...`);
+                state.analysisCache[productId] = { analyzing: true, step: 'Deep deliberation...', isDeep };
+                renderProducts();
+
+                analysis = await deliberatePricing(product, analysis, competitorData, productIdentity, settings);
+                console.log(`[${product.title}] Final deliberated price: $${analysis.suggestedPrice?.toFixed(2)}`);
+            }
 
             // Store result - only keep essential data to avoid localStorage quota issues
             const trimmedAnalysis = {
@@ -2063,7 +2278,8 @@ Instructions:
                 },
                 analyzedAt: new Date().toISOString(),
                 applied: false,
-                isDeep: isDeep
+                isDeep: isDeep,
+                wasDeliberated: analysis.wasDeliberated || false
             };
 
             state.analysisCache[productId] = trimmedAnalysis;
@@ -2079,7 +2295,8 @@ Instructions:
                 localStorage.setItem('oilslick_analysis', JSON.stringify(state.analysisCache));
             }
 
-            logActivity(`Analysis complete: ${product.title} → $${analysis.suggestedPrice?.toFixed(2) || 'N/A'} (${analysis.confidence} confidence, ${analysis.competitorAnalysis?.retailCount || 0} retail competitors)`);
+            const deliberatedLabel = analysis.wasDeliberated ? ' [DELIBERATED]' : '';
+            logActivity(`Analysis complete: ${product.title} → $${analysis.suggestedPrice?.toFixed(2) || 'N/A'} (${analysis.confidence} confidence, ${analysis.competitorAnalysis?.retailCount || 0} competitors)${deliberatedLabel}`);
 
         } catch (e) {
             console.error('Analysis error:', e);
