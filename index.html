@@ -665,17 +665,19 @@
             results.push({ name: 'OpenAI', status: 'warning', message: 'No key provided' });
         }
 
-        // Test Brave
+        // Test Brave (use CORS proxy since Brave API doesn't support CORS)
         const braveKey = document.getElementById('brave-key').value;
         if (braveKey) {
             try {
-                const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=test&count=1`, {
+                const res = await fetch(`${CORS_PROXY}https://api.search.brave.com/res/v1/web/search?q=test&count=1`, {
                     headers: { 'X-Subscription-Token': braveKey }
                 });
                 if (res.ok) {
+                    const data = await res.json();
                     results.push({ name: 'Brave Search', status: 'success', message: 'Connected' });
                 } else {
-                    results.push({ name: 'Brave Search', status: 'error', message: `Error: ${res.status}` });
+                    const errText = await res.text();
+                    results.push({ name: 'Brave Search', status: 'error', message: `Error: ${res.status} - ${errText.slice(0, 100)}` });
                 }
             } catch (e) {
                 results.push({ name: 'Brave Search', status: 'error', message: e.message });
@@ -702,9 +704,15 @@
 
         try {
             let allProducts = [];
-            let url = `${CORS_PROXY}https://oil-slick-pad.myshopify.com/admin/api/2024-01/products.json?limit=250`;
+            let sinceId = 0;
+            let hasMore = true;
+            let pageCount = 0;
 
-            while (url) {
+            // Use since_id pagination (CORS proxy strips Link headers)
+            while (hasMore) {
+                pageCount++;
+                const url = `${CORS_PROXY}https://oil-slick-pad.myshopify.com/admin/api/2024-01/products.json?limit=250&since_id=${sinceId}`;
+
                 const res = await fetch(url, {
                     headers: { 'X-Shopify-Access-Token': settings.shopifyToken }
                 });
@@ -712,15 +720,25 @@
                 if (!res.ok) throw new Error(`Shopify API error: ${res.status}`);
 
                 const data = await res.json();
-                allProducts = allProducts.concat(data.products);
 
-                // Check for pagination
-                const linkHeader = res.headers.get('Link');
-                if (linkHeader && linkHeader.includes('rel="next"')) {
-                    const match = linkHeader.match(/<([^>]+)>; rel="next"/);
-                    url = match ? CORS_PROXY + match[1] : null;
+                if (data.products && data.products.length > 0) {
+                    allProducts = allProducts.concat(data.products);
+                    // Get the highest ID for the next page
+                    sinceId = Math.max(...data.products.map(p => p.id));
+                    showToast(`Loading products... (${allProducts.length} loaded)`, 'info');
+
+                    // If we got less than 250, we're done
+                    if (data.products.length < 250) {
+                        hasMore = false;
+                    }
                 } else {
-                    url = null;
+                    hasMore = false;
+                }
+
+                // Safety limit to prevent infinite loops
+                if (pageCount > 50) {
+                    console.warn('Hit pagination safety limit');
+                    hasMore = false;
                 }
             }
 
@@ -834,11 +852,14 @@
         const searchQuery = `${productTitle} price buy -site:oil-slick-pad.com`;
 
         const res = await fetch(
-            `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(searchQuery)}&count=20`,
+            `${CORS_PROXY}https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(searchQuery)}&count=20`,
             { headers: { 'X-Subscription-Token': settings.braveKey } }
         );
 
-        if (!res.ok) throw new Error(`Brave search error: ${res.status}`);
+        if (!res.ok) {
+            const errText = await res.text();
+            throw new Error(`Brave search error: ${res.status} - ${errText.slice(0, 100)}`);
+        }
 
         const data = await res.json();
         return data.web?.results || [];
