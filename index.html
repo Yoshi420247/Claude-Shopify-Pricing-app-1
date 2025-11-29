@@ -1183,7 +1183,7 @@ IMPORTANT: Determine if this is an import (China-made), domestic (USA-made), or 
         return JSON.parse(data.choices[0].message.content);
     }
 
-    // Step 2: Search and extract actual prices from competitor pages
+    // Step 2: Search and extract prices from competitor results
     async function searchCompetitors(product, productIdentity, settings) {
         if (!settings.braveKey) throw new Error('Brave API key not configured');
 
@@ -1222,20 +1222,28 @@ IMPORTANT: Determine if this is an import (China-made), domestic (USA-made), or 
                             allResults.push({ ...r, searchQuery: query });
                         }
                     }
+                } else {
+                    console.warn(`Search returned ${res.status} for "${query}"`);
                 }
             } catch (e) {
                 console.warn(`Search failed for "${query}":`, e);
             }
         }
 
-        console.log(`Found ${allResults.length} search results, extracting prices...`);
+        console.log(`Found ${allResults.length} search results`);
 
-        // Now fetch each page and extract actual prices
+        // Process results - extract prices from snippets and categorize
         const competitorsWithPrices = [];
         const excluded = [];
+        const rawResults = []; // Keep raw results for AI fallback
 
-        for (const result of allResults.slice(0, 15)) { // Limit to 15 pages to avoid rate limits
-            const domain = new URL(result.url).hostname.replace('www.', '');
+        for (const result of allResults) {
+            let domain;
+            try {
+                domain = new URL(result.url).hostname.replace('www.', '');
+            } catch (e) {
+                continue; // Skip invalid URLs
+            }
 
             // Skip known wholesale/bad domains
             if (WHOLESALE_DOMAINS.some(w => domain.includes(w))) {
@@ -1243,35 +1251,103 @@ IMPORTANT: Determine if this is an import (China-made), domestic (USA-made), or 
                 continue;
             }
 
+            // Try to extract price from search snippet (title + description)
+            const snippetText = `${result.title || ''} ${result.description || ''}`;
+            const snippetPrice = extractPriceFromSnippet(snippetText);
+
+            // Check if this is a known reliable smoke shop domain
+            const isKnownRetailer = RETAIL_SMOKE_SHOPS.some(shop => domain.includes(shop));
+
+            if (snippetPrice) {
+                competitorsWithPrices.push({
+                    source: domain,
+                    url: result.url,
+                    title: result.title,
+                    price: snippetPrice,
+                    extractionMethod: 'search snippet',
+                    isKnownRetailer: isKnownRetailer,
+                    inStock: true
+                });
+                console.log(`  ✓ ${domain}: $${snippetPrice} (from snippet)`);
+            } else {
+                // Keep as raw result for AI to analyze
+                rawResults.push({
+                    source: domain,
+                    url: result.url,
+                    title: result.title,
+                    description: result.description,
+                    isKnownRetailer: isKnownRetailer
+                });
+            }
+        }
+
+        // For known retailers without snippet prices, try page fetch
+        const knownRetailersWithoutPrice = rawResults.filter(r => r.isKnownRetailer).slice(0, 5);
+        for (const result of knownRetailersWithoutPrice) {
             try {
+                console.log(`  Fetching ${result.source}...`);
                 const priceData = await extractPriceFromPage(result.url, settings);
 
                 if (priceData.price && priceData.price > 0) {
                     competitorsWithPrices.push({
-                        source: domain,
+                        source: result.source,
                         url: result.url,
                         title: result.title,
                         price: priceData.price,
                         extractionMethod: priceData.method,
-                        productName: priceData.productName || result.title,
+                        isKnownRetailer: true,
                         inStock: priceData.inStock !== false
                     });
-                    console.log(`  ✓ ${domain}: $${priceData.price} (${priceData.method})`);
-                } else {
-                    excluded.push({ source: domain, url: result.url, reason: priceData.reason || 'no price found' });
+                    console.log(`  ✓ ${result.source}: $${priceData.price} (${priceData.method})`);
+                    // Remove from raw results since we got a price
+                    const idx = rawResults.indexOf(result);
+                    if (idx > -1) rawResults.splice(idx, 1);
                 }
             } catch (e) {
-                excluded.push({ source: domain, url: result.url, reason: 'fetch failed' });
+                console.warn(`  ✗ ${result.source}: fetch failed`);
             }
         }
 
-        console.log(`Extracted ${competitorsWithPrices.length} prices from ${allResults.length} results`);
+        console.log(`Extracted ${competitorsWithPrices.length} prices, ${rawResults.length} unpriced results`);
 
         return {
             competitors: competitorsWithPrices,
+            rawResults: rawResults, // Results without prices for AI to analyze
             excluded: excluded,
             queries: queries
         };
+    }
+
+    // Extract price from search snippet text
+    function extractPriceFromSnippet(text) {
+        if (!text) return null;
+
+        // Look for price patterns like $XX.XX or $X,XXX.XX
+        const pricePatterns = [
+            /\$\s*([\d,]+\.\d{2})\b/g,  // $XX.XX
+            /\$([\d,]+)\s/g,            // $XX (whole dollars)
+            /USD\s*([\d,]+\.?\d*)/gi,   // USD XX.XX
+            /Price:\s*\$?([\d,]+\.?\d*)/gi, // Price: XX.XX
+        ];
+
+        const prices = [];
+        for (const pattern of pricePatterns) {
+            const matches = [...text.matchAll(pattern)];
+            for (const match of matches) {
+                const price = parseFloat(match[1].replace(/,/g, ''));
+                // Sanity check: reasonable product price range
+                if (price >= 1 && price <= 5000) {
+                    prices.push(price);
+                }
+            }
+        }
+
+        if (prices.length === 0) return null;
+
+        // If multiple prices found, prefer the first one (usually the main price)
+        // But filter out very low prices that might be shipping costs
+        const mainPrices = prices.filter(p => p >= 5);
+        return mainPrices.length > 0 ? mainPrices[0] : prices[0];
     }
 
     // Extract price from a competitor page
@@ -1488,25 +1564,37 @@ Respond in JSON format:
   "marketPosition": "below market" | "at market" | "above market" | "premium" | "unknown"
 }`;
 
-        // Build verified prices section
+        // Build competitor sections
         const verifiedPrices = competitorData.competitors || [];
+        const rawResults = competitorData.rawResults || [];
         const excludedResults = competitorData.excluded || [];
 
         let competitorSection = '';
+
+        // Section 1: Verified prices (extracted from snippets or pages)
         if (verifiedPrices.length > 0) {
-            competitorSection = `VERIFIED COMPETITOR PRICES (extracted from actual product pages):
-${verifiedPrices.map((c, i) => `${i + 1}. ${c.source}: $${c.price.toFixed(2)}
+            competitorSection = `EXTRACTED COMPETITOR PRICES (${verifiedPrices.length} found):
+${verifiedPrices.map((c, i) => `${i + 1}. ${c.source}: $${c.price.toFixed(2)}${c.isKnownRetailer ? ' [KNOWN RETAILER]' : ''}
    URL: ${c.url}
-   Page Title: ${c.title}
-   Price Extraction: ${c.extractionMethod}
-   In Stock: ${c.inStock ? 'Yes' : 'Unknown'}`).join('\n\n')}`;
-        } else {
-            competitorSection = 'NO VERIFIED PRICES FOUND - could not extract prices from any competitor pages';
+   Title: ${c.title}
+   Source: ${c.extractionMethod}`).join('\n\n')}`;
+        }
+
+        // Section 2: Raw results without prices (AI should try to identify prices or analyze)
+        if (rawResults.length > 0) {
+            competitorSection += `\n\nADDITIONAL SEARCH RESULTS (no price extracted - analyze these):
+${rawResults.slice(0, 10).map((r, i) => `${i + 1}. ${r.source}${r.isKnownRetailer ? ' [KNOWN RETAILER]' : ''}
+   URL: ${r.url}
+   Title: ${r.title}
+   Description: ${(r.description || '').slice(0, 200)}`).join('\n\n')}`;
+        }
+
+        if (verifiedPrices.length === 0 && rawResults.length === 0) {
+            competitorSection = 'NO COMPETITOR RESULTS FOUND - search returned no relevant results';
         }
 
         if (excludedResults.length > 0) {
-            competitorSection += `\n\nEXCLUDED RESULTS:
-${excludedResults.slice(0, 10).map(e => `- ${e.source}: ${e.reason}`).join('\n')}`;
+            competitorSection += `\n\nEXCLUDED (${excludedResults.length}): ${excludedResults.slice(0, 5).map(e => `${e.source} (${e.reason})`).join(', ')}`;
         }
 
         const userPrompt = `Analyze pricing for this product:
@@ -1530,17 +1618,17 @@ AI PRODUCT IDENTIFICATION:
 ${competitorSection}
 
 Instructions:
-1. Review the VERIFIED PRICES above - these are actual prices extracted from competitor websites
-2. For each competitor, verify it's a legitimate RETAIL smoke/head shop (not wholesale)
-3. CRITICAL: Only keep competitors selling the SAME QUALITY TIER (${originTier})
+1. First, review EXTRACTED PRICES - these are verified prices from search snippets or page scraping
+2. Then review ADDITIONAL SEARCH RESULTS - look for prices in titles/descriptions you can use
+3. For each competitor, verify it's a legitimate RETAIL smoke/head shop (not wholesale)
+4. CRITICAL: Only keep competitors selling the SAME QUALITY TIER (${originTier})
    - If this is an import item, only compare with other import items
    - If this is domestic, only compare with other domestic items
    - If this is heady/art, only compare with other heady/art pieces
-4. Use fuzzy matching - determine if each competitor's product is the same or very similar to ours
-5. Use ONLY the verified prices provided - these have been extracted directly from pages
-6. Calculate competitive pricing based on the valid same-tier retail competitors
-7. If no valid same-tier retail competitors found, recommend keeping current price with low confidence
-8. Confidence should be HIGH only if we have 2+ verified prices from matching products at same tier`;
+5. Use fuzzy matching - determine if each competitor's product is the same or very similar to ours
+6. Prioritize [KNOWN RETAILER] sources as they are verified smoke shops
+7. Calculate competitive pricing based on the valid same-tier retail competitors
+8. If no valid same-tier retail competitors found, recommend keeping current price with low confidence`;
 
         const res = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
@@ -1841,7 +1929,7 @@ Instructions:
             // Step 2: Search for competitors and extract verified prices
             console.log(`[${product.title}] Step 2: Searching and extracting prices...`);
             const competitorData = await searchCompetitors(product, productIdentity, settings);
-            console.log(`[${product.title}] Found ${competitorData.competitors.length} verified prices from ${competitorData.queries.length} queries`);
+            console.log(`[${product.title}] Found ${competitorData.competitors.length} prices + ${(competitorData.rawResults || []).length} raw results from ${competitorData.queries.length} queries`);
 
             state.analysisCache[productId] = { analyzing: true, step: 'Analyzing pricing...' };
             renderProducts();
