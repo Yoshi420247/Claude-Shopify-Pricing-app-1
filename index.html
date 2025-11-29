@@ -556,10 +556,34 @@
             updateSwitchVisual(btn);
         }
 
-        // Load cached data
-        state.products = JSON.parse(localStorage.getItem('oilslick_products') || '[]');
-        state.analysisCache = JSON.parse(localStorage.getItem('oilslick_analysis') || '{}');
-        state.activityLog = JSON.parse(localStorage.getItem('oilslick_activity') || '[]');
+        // Load cached data with error handling
+        try {
+            state.products = JSON.parse(localStorage.getItem('oilslick_products') || '[]');
+        } catch (e) {
+            state.products = [];
+        }
+
+        try {
+            state.analysisCache = JSON.parse(localStorage.getItem('oilslick_analysis') || '{}');
+            // Trim if too large (keep only 200 most recent)
+            const entries = Object.entries(state.analysisCache);
+            if (entries.length > 200) {
+                entries.sort((a, b) => (b[1].analyzedAt || '').localeCompare(a[1].analyzedAt || ''));
+                state.analysisCache = Object.fromEntries(entries.slice(0, 200));
+                localStorage.setItem('oilslick_analysis', JSON.stringify(state.analysisCache));
+                console.log('Trimmed analysis cache to 200 entries');
+            }
+        } catch (e) {
+            console.warn('Clearing corrupted analysis cache');
+            state.analysisCache = {};
+            localStorage.removeItem('oilslick_analysis');
+        }
+
+        try {
+            state.activityLog = JSON.parse(localStorage.getItem('oilslick_activity') || '[]').slice(-100);
+        } catch (e) {
+            state.activityLog = [];
+        }
 
         updateConnectionStatus();
     }
@@ -1972,15 +1996,50 @@ Instructions:
             const analysis = await analyzeWithAI(product, competitorData, productIdentity, settings);
             console.log(`[${product.title}] Suggested price: $${analysis.suggestedPrice?.toFixed(2)}`);
 
-            // Store result
-            state.analysisCache[productId] = {
-                ...analysis,
+            // Store result - only keep essential data to avoid localStorage quota issues
+            const trimmedAnalysis = {
+                suggestedPrice: analysis.suggestedPrice,
+                confidence: analysis.confidence,
+                confidenceReason: analysis.confidenceReason,
+                summary: analysis.summary,
+                reasoning: (analysis.reasoning || []).slice(0, 5),
+                marketPosition: analysis.marketPosition,
+                priceFloor: analysis.priceFloor,
+                priceCeiling: analysis.priceCeiling,
+                productMatch: analysis.productMatch,
+                competitorAnalysis: {
+                    kept: (analysis.competitorAnalysis?.kept || []).slice(0, 10),
+                    excluded: (analysis.competitorAnalysis?.excluded || []).slice(0, 5),
+                    low: analysis.competitorAnalysis?.low,
+                    median: analysis.competitorAnalysis?.median,
+                    high: analysis.competitorAnalysis?.high,
+                    retailCount: analysis.competitorAnalysis?.retailCount
+                },
+                productIdentity: {
+                    identifiedAs: productIdentity.identifiedAs,
+                    productType: productIdentity.productType,
+                    originTier: productIdentity.originTier,
+                    confidence: productIdentity.confidence
+                },
+                analyzedAt: new Date().toISOString(),
                 applied: false,
                 isDeep: isDeep
             };
 
-            localStorage.setItem('oilslick_analysis', JSON.stringify(state.analysisCache));
-            logActivity(`${modeLabel}Analysis complete: ${product.title} → $${analysis.suggestedPrice?.toFixed(2) || 'N/A'} (${analysis.confidence} confidence, ${analysis.competitorAnalysis?.retailCount || 0} retail competitors)`);
+            state.analysisCache[productId] = trimmedAnalysis;
+
+            try {
+                localStorage.setItem('oilslick_analysis', JSON.stringify(state.analysisCache));
+            } catch (storageError) {
+                console.warn('localStorage full, clearing old analyses');
+                // If storage is full, keep only most recent 100 analyses
+                const entries = Object.entries(state.analysisCache);
+                entries.sort((a, b) => (b[1].analyzedAt || '').localeCompare(a[1].analyzedAt || ''));
+                state.analysisCache = Object.fromEntries(entries.slice(0, 100));
+                localStorage.setItem('oilslick_analysis', JSON.stringify(state.analysisCache));
+            }
+
+            logActivity(`Analysis complete: ${product.title} → $${analysis.suggestedPrice?.toFixed(2) || 'N/A'} (${analysis.confidence} confidence, ${analysis.competitorAnalysis?.retailCount || 0} retail competitors)`);
 
         } catch (e) {
             console.error('Analysis error:', e);
