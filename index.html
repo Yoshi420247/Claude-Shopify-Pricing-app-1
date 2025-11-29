@@ -784,23 +784,78 @@
     async function loadInventoryCosts() {
         const settings = getSettings();
 
+        // Collect all inventory item IDs
+        const inventoryItemIds = [];
+        const variantMap = new Map(); // inventoryItemId -> variant reference
+
         for (const product of state.products) {
             for (const variant of product.variants) {
                 if (variant.inventoryItemId) {
-                    try {
-                        const res = await fetch(
-                            `${CORS_PROXY}https://oil-slick-pad.myshopify.com/admin/api/2024-01/inventory_items/${variant.inventoryItemId}.json`,
-                            { headers: { 'X-Shopify-Access-Token': settings.shopifyToken } }
-                        );
-                        if (res.ok) {
-                            const data = await res.json();
-                            variant.cost = data.inventory_item.cost ? parseFloat(data.inventory_item.cost) : null;
-                        }
-                    } catch (e) {
-                        console.warn('Could not load cost for variant', variant.id);
-                    }
+                    inventoryItemIds.push(variant.inventoryItemId);
+                    variantMap.set(variant.inventoryItemId, variant);
                 }
             }
+        }
+
+        if (inventoryItemIds.length === 0) {
+            console.log('No inventory items to fetch costs for');
+            return;
+        }
+
+        console.log(`Loading costs for ${inventoryItemIds.length} inventory items...`);
+        showToast(`Loading costs for ${inventoryItemIds.length} items...`, 'info');
+
+        let loadedCount = 0;
+        let errorCount = 0;
+
+        // Batch fetch inventory items (max 100 per request per Shopify API)
+        const batchSize = 100;
+        for (let i = 0; i < inventoryItemIds.length; i += batchSize) {
+            const batch = inventoryItemIds.slice(i, i + batchSize);
+            const idsParam = batch.join(',');
+
+            try {
+                const res = await fetch(
+                    `${CORS_PROXY}https://oil-slick-pad.myshopify.com/admin/api/2024-01/inventory_items.json?ids=${idsParam}`,
+                    { headers: { 'X-Shopify-Access-Token': settings.shopifyToken } }
+                );
+
+                if (res.ok) {
+                    const data = await res.json();
+
+                    if (data.inventory_items && Array.isArray(data.inventory_items)) {
+                        for (const item of data.inventory_items) {
+                            const variant = variantMap.get(item.id);
+                            if (variant) {
+                                variant.cost = item.cost ? parseFloat(item.cost) : null;
+                                if (variant.cost !== null) {
+                                    loadedCount++;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    console.error(`Failed to fetch batch ${i}-${i + batchSize}:`, res.status);
+                    errorCount++;
+                }
+            } catch (e) {
+                console.error(`Error fetching batch ${i}-${i + batchSize}:`, e);
+                errorCount++;
+            }
+
+            // Update progress
+            const progress = Math.min(100, Math.round(((i + batchSize) / inventoryItemIds.length) * 100));
+            showToast(`Loading costs... ${progress}% (${loadedCount} loaded)`, 'info');
+        }
+
+        console.log(`Loaded ${loadedCount} costs, ${errorCount} batch errors`);
+
+        if (loadedCount > 0) {
+            showToast(`Loaded costs for ${loadedCount} products`, 'success');
+        } else if (errorCount > 0) {
+            showToast(`Failed to load costs - check API permissions`, 'error');
+        } else {
+            showToast(`No cost data found in Shopify`, 'warning');
         }
     }
 
