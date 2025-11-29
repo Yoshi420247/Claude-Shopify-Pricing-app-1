@@ -1495,29 +1495,28 @@ This product has been identified as: "${originTier}" tier
 - "domestic" = USA-made, higher quality, premium pricing
 - "heady" = Handmade art pieces, artist-made, luxury pricing
 
-YOU MUST ONLY COMPARE WITH PRODUCTS OF THE SAME TIER!
-- Do NOT compare import items with domestic or heady pieces
-- Do NOT compare heady art pieces with mass-produced imports
-- If a competitor product appears to be a different tier, EXCLUDE it with reason "different quality tier"
+QUALITY TIER MATCHING (FLEXIBLE):
+- PREFER same-tier comparisons when available
+- If no same-tier competitors found, you MAY use adjacent tiers with notes
+- Note the tier difference in your analysis but DON'T exclude just for tier mismatch
+- For heady/art pieces: other art glass or premium items are acceptable comparisons
+- For imports: other value/budget items are acceptable
+- ALWAYS include available competitors - better to have data than none
 
-IMPORTANT: You will receive VERIFIED PRICES that have been extracted directly from competitor product pages.
-These prices are real - they have been scraped from the actual HTML/JSON of competitor websites.
 Your job is to:
 1. Validate which competitors are legitimate RETAIL smoke shops (not wholesale/B2B)
 2. Validate which products are actually the SAME or SIMILAR to ours
-3. Filter out competitors selling DIFFERENT QUALITY TIER products
-4. Use the verified prices to calculate competitive pricing
+3. Note quality tier differences but still include useful price data
+4. Use the prices to calculate competitive pricing
 
-CRITICAL FILTERING RULES:
+FILTERING RULES:
 1. ONLY use prices from RETAIL smoke shops and head shops (online stores that sell to consumers)
 2. EXCLUDE all wholesale, distributor, B2B, bulk pricing sources
 3. EXCLUDE marketplace listings (eBay, Amazon marketplace sellers) unless from verified retailers
-4. EXCLUDE products from a DIFFERENT QUALITY TIER than this product
-5. Use FUZZY MATCHING - products don't need exact title matches. Match by:
-   - Same product type/category
-   - Same or equivalent brand
-   - Similar size/capacity/features
-   - SAME quality tier (import/domestic/heady)
+4. Use FUZZY MATCHING - products don't need exact title matches. Match by:
+   - Same product type/category (glass pendant, dab tool, etc.)
+   - Similar style/size/features
+   - Comparable quality level (note if different)
 
 Known retail smoke shops to trust: ${RETAIL_SMOKE_SHOPS.slice(0, 10).join(', ')}
 Known wholesale domains to EXCLUDE: ${WHOLESALE_DOMAINS.slice(0, 10).join(', ')}
@@ -1621,14 +1620,13 @@ Instructions:
 1. First, review EXTRACTED PRICES - these are verified prices from search snippets or page scraping
 2. Then review ADDITIONAL SEARCH RESULTS - look for prices in titles/descriptions you can use
 3. For each competitor, verify it's a legitimate RETAIL smoke/head shop (not wholesale)
-4. CRITICAL: Only keep competitors selling the SAME QUALITY TIER (${originTier})
-   - If this is an import item, only compare with other import items
-   - If this is domestic, only compare with other domestic items
-   - If this is heady/art, only compare with other heady/art pieces
-5. Use fuzzy matching - determine if each competitor's product is the same or very similar to ours
+4. PREFER same quality tier (${originTier}) but INCLUDE other tiers if needed - note the difference
+5. Use fuzzy matching - determine if each competitor's product is the same or similar type
 6. Prioritize [KNOWN RETAILER] sources as they are verified smoke shops
-7. Calculate competitive pricing based on the valid same-tier retail competitors
-8. If no valid same-tier retail competitors found, recommend keeping current price with low confidence`;
+7. KEEP as many relevant competitors as possible - include them with notes about tier differences
+8. Calculate competitive pricing based on available retail competitors
+9. If no competitors at all, recommend keeping current price with low confidence
+10. For heady/art glass: compare with other art glass, pendants, or premium glass items`;
 
         const res = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
