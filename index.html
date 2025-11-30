@@ -658,7 +658,21 @@
     // ============================================================================
     // API INTEGRATIONS
     // ============================================================================
-    const CORS_PROXY = 'https://corsproxy.io/?';
+    const CORS_PROXIES = [
+        'https://corsproxy.io/?',
+        'https://api.allorigins.win/raw?url=',
+        'https://cors-anywhere.herokuapp.com/'
+    ];
+    let activeCorsProxyIndex = 0;
+    let CORS_PROXY = CORS_PROXIES[0];
+
+    // Try next CORS proxy if current one fails
+    function switchCorsProxy() {
+        activeCorsProxyIndex = (activeCorsProxyIndex + 1) % CORS_PROXIES.length;
+        CORS_PROXY = CORS_PROXIES[activeCorsProxyIndex];
+        console.log(`Switched to CORS proxy: ${CORS_PROXY}`);
+        return CORS_PROXY;
+    }
 
     async function testConnections() {
         const resultsEl = document.getElementById('connection-results');
@@ -1337,39 +1351,65 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
         queries = queries.filter(Boolean).slice(0, isDeep ? 10 : 6);
         const resultsPerQuery = isDeep ? 15 : 10;
 
-        console.log(`[${isDeep ? 'DEEP' : 'Normal'}] Running ${queries.length} queries...`);
+        console.log(`[${isDeep ? 'DEEP' : 'Normal'}] Running ${queries.length} queries at broadening level ${broadeningLevel}...`);
         console.log(`Queries: ${queries.join(' | ')}`);
 
-        // Search for results
+        // Debug: Log what inputs we have
+        console.log(`Search inputs - brand: "${brand}", productType: "${productType}", productName: "${productName}", originTier: "${originTier}"`);
+        console.log(`AI search queries: ${JSON.stringify(productIdentity.searchQueries || [])}`);
+
+        if (queries.length === 0) {
+            console.error('WARNING: No queries generated! Check productIdentity:', productIdentity);
+        }
+
+        // Search for results with retry logic
         for (const query of queries) {
-            try {
-                const retailQuery = `${query} -wholesale -bulk -distributor -alibaba -dhgate -ebay`;
+            const retailQuery = `${query} -wholesale -bulk -distributor -alibaba -dhgate -ebay`;
+            console.log(`Searching: "${retailQuery.substring(0, 60)}..."`);
 
-                console.log(`Searching: "${retailQuery.substring(0, 50)}..."`);
+            let searchSuccess = false;
+            let retryCount = 0;
+            const maxRetries = CORS_PROXIES.length;
 
-                const res = await fetch(
-                    `${CORS_PROXY}https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(retailQuery)}&count=${resultsPerQuery}`,
-                    { headers: { 'X-Subscription-Token': settings.braveKey } }
-                );
+            while (!searchSuccess && retryCount < maxRetries) {
+                try {
+                    const searchUrl = `${CORS_PROXY}https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(retailQuery)}&count=${resultsPerQuery}`;
+                    console.log(`  Using proxy: ${CORS_PROXY.substring(0, 30)}...`);
 
-                console.log(`Search response status: ${res.status}`);
+                    const res = await fetch(searchUrl, {
+                        headers: { 'X-Subscription-Token': settings.braveKey },
+                        timeout: 15000
+                    });
 
-                if (res.ok) {
-                    const data = await res.json();
-                    const resultCount = data.web?.results?.length || 0;
-                    console.log(`  Got ${resultCount} results for "${query.substring(0, 30)}..."`);
-                    for (const r of (data.web?.results || [])) {
-                        if (!seenUrls.has(r.url)) {
-                            seenUrls.add(r.url);
-                            allResults.push({ ...r, searchQuery: query });
+                    console.log(`  Response status: ${res.status}`);
+
+                    if (res.ok) {
+                        const data = await res.json();
+                        const resultCount = data.web?.results?.length || 0;
+                        console.log(`  ✓ Got ${resultCount} results for "${query.substring(0, 30)}..."`);
+                        for (const r of (data.web?.results || [])) {
+                            if (!seenUrls.has(r.url)) {
+                                seenUrls.add(r.url);
+                                allResults.push({ ...r, searchQuery: query });
+                            }
                         }
+                        searchSuccess = true;
+                    } else if (res.status === 403 || res.status === 429 || res.status === 0) {
+                        // CORS or rate limit issue - try another proxy
+                        const errorText = await res.text().catch(() => 'Unknown error');
+                        console.warn(`  Proxy issue (${res.status}), trying next proxy...`);
+                        switchCorsProxy();
+                        retryCount++;
+                    } else {
+                        const errorText = await res.text();
+                        console.error(`  Search returned ${res.status}: ${errorText.substring(0, 100)}`);
+                        searchSuccess = true; // Don't retry for other errors
                     }
-                } else {
-                    const errorText = await res.text();
-                    console.error(`Search returned ${res.status} for "${query}": ${errorText.substring(0, 200)}`);
+                } catch (e) {
+                    console.warn(`  Fetch failed: ${e.message}, trying next proxy...`);
+                    switchCorsProxy();
+                    retryCount++;
                 }
-            } catch (e) {
-                console.error(`Search failed for "${query}":`, e);
             }
         }
 
@@ -1833,28 +1873,41 @@ Instructions:
         const seenUrls = new Set();
 
         for (const query of alternativeQueries.slice(0, 6)) {
-            try {
-                const res = await fetch(
-                    `${CORS_PROXY}https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query + ' -wholesale -bulk')}&count=10`,
-                    { headers: { 'X-Subscription-Token': settings.braveKey } }
-                );
+            let searchSuccess = false;
+            let retryCount = 0;
 
-                if (res.ok) {
-                    const data = await res.json();
-                    for (const r of (data.web?.results || [])) {
-                        if (!seenUrls.has(r.url)) {
-                            seenUrls.add(r.url);
-                            const snippetPrice = extractPriceFromSnippet(`${r.title} ${r.description}`);
-                            allResults.push({
-                                ...r,
-                                price: snippetPrice,
-                                searchQuery: query
-                            });
+            while (!searchSuccess && retryCount < CORS_PROXIES.length) {
+                try {
+                    const res = await fetch(
+                        `${CORS_PROXY}https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query + ' -wholesale -bulk')}&count=10`,
+                        { headers: { 'X-Subscription-Token': settings.braveKey } }
+                    );
+
+                    if (res.ok) {
+                        const data = await res.json();
+                        for (const r of (data.web?.results || [])) {
+                            if (!seenUrls.has(r.url)) {
+                                seenUrls.add(r.url);
+                                const snippetPrice = extractPriceFromSnippet(`${r.title} ${r.description}`);
+                                allResults.push({
+                                    ...r,
+                                    price: snippetPrice,
+                                    searchQuery: query
+                                });
+                            }
                         }
+                        searchSuccess = true;
+                    } else if (res.status === 403 || res.status === 429 || res.status === 0) {
+                        switchCorsProxy();
+                        retryCount++;
+                    } else {
+                        searchSuccess = true; // Don't retry for other errors
                     }
+                } catch (e) {
+                    console.warn(`Alt search failed for "${query}": ${e.message}`);
+                    switchCorsProxy();
+                    retryCount++;
                 }
-            } catch (e) {
-                console.warn(`Alt search failed: ${query}`);
             }
         }
 
@@ -2443,7 +2496,8 @@ Respond in JSON:
                 analyzedAt: new Date().toISOString(),
                 applied: false,
                 isDeep: isDeep,
-                wasDeliberated: analysis.wasDeliberated || false
+                wasDeliberated: analysis.wasDeliberated || false,
+                searchQueries: competitorData.queries.slice(0, 20) // Store queries used for debugging
             };
 
             state.analysisCache[productId] = trimmedAnalysis;
