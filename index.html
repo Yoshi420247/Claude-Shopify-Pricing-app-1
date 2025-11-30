@@ -658,22 +658,28 @@
     // ============================================================================
     // API INTEGRATIONS
     // ============================================================================
-    // CORS proxies - corsproxy.io works with direct URL concatenation
-    // Note: allorigins requires URL encoding but we handle that in fetch calls
+    // CORS proxies that forward headers - corsproxy.io is most reliable
     const CORS_PROXIES = [
         'https://corsproxy.io/?',
-        'https://proxy.cors.sh/',
-        'https://api.codetabs.com/v1/proxy?quest='
+        'https://cors.bridged.cc/',
+        ''  // Empty = try direct call (works if running from allowed origin)
     ];
     let activeCorsProxyIndex = 0;
     let CORS_PROXY = CORS_PROXIES[0];
+    let lastWorkingProxy = CORS_PROXIES[0]; // Track which proxy actually worked
 
     // Try next CORS proxy if current one fails
     function switchCorsProxy() {
         activeCorsProxyIndex = (activeCorsProxyIndex + 1) % CORS_PROXIES.length;
         CORS_PROXY = CORS_PROXIES[activeCorsProxyIndex];
-        console.log(`Switched to CORS proxy: ${CORS_PROXY}`);
+        console.log(`Switched to CORS proxy: ${CORS_PROXY || '(direct call)'}`);
         return CORS_PROXY;
+    }
+
+    // Reset to last known working proxy
+    function useWorkingProxy() {
+        CORS_PROXY = lastWorkingProxy;
+        activeCorsProxyIndex = CORS_PROXIES.indexOf(lastWorkingProxy);
     }
 
     async function testConnections() {
@@ -1289,21 +1295,27 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
 
         // Level 0: Specific product queries (first attempt)
         if (broadeningLevel === 0) {
+            // Clean up product name - remove special characters that might break search
+            const cleanProductName = productName.replace(/[^\w\s-]/g, ' ').replace(/\s+/g, ' ').trim();
+            const cleanBrand = brand.replace(/[^\w\s-]/g, ' ').trim();
+
             queries = [
-                // AI-generated queries first
+                // AI-generated queries first (if available)
                 ...(productIdentity.searchQueries || []),
-                // Specific product searches
-                `"${product.title}" price`,
-                `${brand} ${productType} buy`,
-                `${productName} smoke shop price`,
+                // Specific product searches with cleaned names
+                `${cleanProductName} price buy`,
+                `${cleanBrand} ${productType} price`.trim(),
+                `${cleanProductName} smoke shop`,
+                `${productType} ${cleanBrand} buy online`.trim(),
             ];
 
             // Deep mode: add more query variations
             if (isDeep) {
                 queries.push(
-                    `${productName} head shop`,
-                    `buy ${productName} online`,
-                    `${brand} ${productName}`.trim(),
+                    `${cleanProductName} head shop`,
+                    `buy ${cleanProductName} online`,
+                    `${productType} for sale price`,
+                    `${cleanBrand} ${cleanProductName}`.trim(),
                 );
             }
         }
@@ -1324,38 +1336,46 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
                 `${searchType} for sale`,
             ];
         }
-        // Level 2: Very broad generic queries (third attempt)
+        // Level 2: Very broad generic queries (third attempt) - GUARANTEED to return results
         else if (broadeningLevel >= 2) {
-            console.log(`[Broadening Level 2] Using very broad queries...`);
+            console.log(`[Broadening Level 2] Using guaranteed broad queries...`);
             // Use general category and similar product types
             const typeToCheck = (productType || productName || '').toLowerCase();
-            const generalCategory = typeToCheck.includes('pendant') ? 'glass pendant' :
-                                   typeToCheck.includes('tool') ? 'dab tool' :
-                                   typeToCheck.includes('banger') ? 'quartz banger' :
+            const generalCategory = typeToCheck.includes('pendant') ? 'glass pendant jewelry' :
+                                   typeToCheck.includes('tool') ? 'dab tool dabber' :
+                                   typeToCheck.includes('banger') ? 'quartz banger nail' :
                                    typeToCheck.includes('cap') ? 'carb cap' :
                                    typeToCheck.includes('rig') ? 'dab rig' :
-                                   typeToCheck.includes('pipe') ? 'glass pipe' :
-                                   typeToCheck.includes('bubbler') ? 'bubbler' :
-                                   productType || productName || 'smoke shop accessories';
+                                   typeToCheck.includes('pipe') ? 'glass pipe smoking' :
+                                   typeToCheck.includes('bubbler') ? 'glass bubbler' :
+                                   typeToCheck.includes('grinder') ? 'herb grinder' :
+                                   typeToCheck.includes('tray') ? 'rolling tray' :
+                                   typeToCheck.includes('container') ? 'silicone container dab' :
+                                   typeToCheck.includes('mat') ? 'silicone dab mat' :
+                                   typeToCheck.includes('nectar') ? 'nectar collector' :
+                                   productType || 'smoke shop glass';
 
             queries = [
-                `${generalCategory} smoke shop`,
-                `${generalCategory} price`,
-                `${generalCategory} online`,
-                `buy ${generalCategory}`,
-                `${generalCategory} head shop`,
+                // Guaranteed to return results - generic smoke shop searches
+                `${generalCategory} for sale`,
+                `${generalCategory} shop price`,
+                `buy ${generalCategory} online store`,
+                `${generalCategory} retail price`,
+                // Try known retailers directly
+                `site:smokecartel.com ${generalCategory}`,
+                `site:dankgeek.com ${generalCategory}`,
+                `site:grasscity.com ${generalCategory}`,
+                `site:everythingfor420.com ${generalCategory}`,
                 // Also try tier-specific broad searches
-                originTier === 'heady' ? 'heady glass art price' : null,
-                originTier === 'heady' ? 'handmade glass pendant' : null,
-                originTier === 'domestic' ? 'american made glass price' : null,
-                originTier === 'import' ? `cheap ${generalCategory}` : null,
-                // Generic smoke shop searches
-                'smoke shop glass prices',
-                'head shop accessories',
+                originTier === 'heady' ? 'heady glass art for sale' : `${generalCategory} smoke shop`,
+                originTier === 'heady' ? 'handmade glass pendant buy' : `cheap ${generalCategory}`,
+                // Ultimate fallbacks - these WILL return results
+                'smoke shop products price',
+                'head shop glass for sale',
             ];
         }
 
-        queries = queries.filter(Boolean).slice(0, isDeep ? 10 : 6);
+        queries = queries.filter(Boolean).slice(0, isDeep ? 12 : 8);
         const resultsPerQuery = isDeep ? 15 : 10;
 
         console.log(`[${isDeep ? 'DEEP' : 'Normal'}] Running ${queries.length} queries at broadening level ${broadeningLevel}...`);
@@ -1399,6 +1419,15 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
                         const data = await res.json();
                         const resultCount = data.web?.results?.length || 0;
                         console.log(`  ✓ Got ${resultCount} results for "${query.substring(0, 30)}..."`);
+
+                        // Track that this proxy works
+                        lastWorkingProxy = CORS_PROXY;
+
+                        // Log first few results for debugging
+                        if (resultCount > 0 && data.web.results[0]) {
+                            console.log(`  Sample result: ${data.web.results[0].title?.substring(0, 50)}...`);
+                        }
+
                         for (const r of (data.web?.results || [])) {
                             if (!seenUrls.has(r.url)) {
                                 seenUrls.add(r.url);
@@ -1425,12 +1454,27 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
             }
         }
 
-        console.log(`Found ${allResults.length} search results`);
+        console.log(`Found ${allResults.length} total search results`);
+
+        // DIAGNOSTIC: Log sample of raw results to see what we're getting
+        if (allResults.length > 0) {
+            console.log('=== SAMPLE RAW SEARCH RESULTS ===');
+            allResults.slice(0, 3).forEach((r, i) => {
+                console.log(`[${i + 1}] ${r.title?.substring(0, 60)}`);
+                console.log(`    URL: ${r.url}`);
+                console.log(`    Desc: ${r.description?.substring(0, 80)}...`);
+            });
+            console.log('=================================');
+        } else {
+            console.warn('⚠️ NO SEARCH RESULTS RETURNED - Check Brave API key and CORS proxy');
+        }
 
         // Process results - extract prices from snippets and categorize
         const competitorsWithPrices = [];
         const excluded = [];
         const rawResults = []; // Keep raw results for AI fallback
+        let pricesExtracted = 0;
+        let wholesaleFiltered = 0;
 
         for (const result of allResults) {
             let domain;
@@ -1440,15 +1484,18 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
                 continue; // Skip invalid URLs
             }
 
-            // Skip known wholesale/bad domains
-            if (WHOLESALE_DOMAINS.some(w => domain.includes(w))) {
+            // Skip known wholesale/bad domains - but be less aggressive
+            const isWholesale = WHOLESALE_DOMAINS.some(w => domain.includes(w));
+            if (isWholesale) {
                 excluded.push({ source: domain, url: result.url, reason: 'wholesale domain' });
+                wholesaleFiltered++;
                 continue;
             }
 
             // Try to extract price from search snippet (title + description)
             const snippetText = `${result.title || ''} ${result.description || ''}`;
             const snippetPrice = extractPriceFromSnippet(snippetText);
+            if (snippetPrice) pricesExtracted++;
 
             // Check if this is a known reliable smoke shop domain
             const isKnownRetailer = RETAIL_SMOKE_SHOPS.some(shop => domain.includes(shop));
@@ -1504,7 +1551,31 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
             }
         }
 
-        console.log(`Extracted ${competitorsWithPrices.length} prices, ${rawResults.length} unpriced results`);
+        // DIAGNOSTIC SUMMARY
+        console.log(`
+╔══════════════════════════════════════════════════════════════╗
+║ SEARCH RESULTS SUMMARY                                        ║
+╠══════════════════════════════════════════════════════════════╣
+║ Queries executed: ${queries.length.toString().padEnd(40)}║
+║ Total results found: ${allResults.length.toString().padEnd(37)}║
+║ Prices extracted from snippets: ${pricesExtracted.toString().padEnd(26)}║
+║ Final competitors with prices: ${competitorsWithPrices.length.toString().padEnd(27)}║
+║ Wholesale domains filtered: ${wholesaleFiltered.toString().padEnd(30)}║
+║ Raw results (for AI): ${rawResults.length.toString().padEnd(36)}║
+╚══════════════════════════════════════════════════════════════╝`);
+
+        // If we got 0 results, log additional diagnostic info
+        if (allResults.length === 0) {
+            console.error('❌ CRITICAL: Search returned 0 results. Possible causes:');
+            console.error('   1. Brave API key is invalid or expired');
+            console.error('   2. CORS proxy is blocking the request');
+            console.error('   3. Rate limiting on Brave API');
+            console.error('   → Try running Test Connections in Settings to verify API access');
+        } else if (competitorsWithPrices.length === 0) {
+            console.warn('⚠️ WARNING: Got search results but extracted 0 prices');
+            console.warn('   This may be because search results don\'t contain price info in snippets');
+            console.warn('   The AI will attempt to work with the raw results');
+        }
 
         return {
             competitors: competitorsWithPrices,
@@ -1514,25 +1585,35 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
         };
     }
 
-    // Extract price from search snippet text
+    // Extract price from search snippet text - improved to catch more formats
     function extractPriceFromSnippet(text) {
         if (!text) return null;
 
-        // Look for price patterns like $XX.XX or $X,XXX.XX
+        // Look for price patterns - expanded list to catch more formats
         const pricePatterns = [
-            /\$\s*([\d,]+\.\d{2})\b/g,  // $XX.XX
-            /\$([\d,]+)\s/g,            // $XX (whole dollars)
-            /USD\s*([\d,]+\.?\d*)/gi,   // USD XX.XX
-            /Price:\s*\$?([\d,]+\.?\d*)/gi, // Price: XX.XX
+            /\$\s*([\d,]+\.\d{2})\b/g,           // $XX.XX (most common)
+            /\$\s*([\d,]+\.\d{1})\b/g,           // $XX.X
+            /\$([\d,]+)(?:\s|$|[^\d.])/g,        // $XX (whole dollars)
+            /USD\s*([\d,]+\.?\d*)/gi,            // USD XX.XX
+            /Price[:\s]+\$?([\d,]+\.?\d*)/gi,    // Price: XX.XX or Price XX.XX
+            /\$([\d]+)\s*-\s*\$([\d]+)/g,        // $XX - $XX (price range, take first)
+            /from\s+\$([\d,]+\.?\d*)/gi,         // from $XX.XX
+            /only\s+\$([\d,]+\.?\d*)/gi,         // only $XX.XX
+            /now\s+\$([\d,]+\.?\d*)/gi,          // now $XX.XX
+            /sale\s+\$([\d,]+\.?\d*)/gi,         // sale $XX.XX
+            /\$([\d,]+\.?\d*)\s*USD/gi,          // $XX.XX USD
+            /(?:^|\s)([\d]+\.[\d]{2})(?:\s|$)/g, // XX.XX (standalone decimal)
         ];
 
         const prices = [];
         for (const pattern of pricePatterns) {
+            pattern.lastIndex = 0; // Reset regex state
             const matches = [...text.matchAll(pattern)];
             for (const match of matches) {
-                const price = parseFloat(match[1].replace(/,/g, ''));
-                // Sanity check: reasonable product price range
-                if (price >= 1 && price <= 5000) {
+                const priceStr = match[1] || match[0];
+                const price = parseFloat(priceStr.replace(/[$,\s]/g, ''));
+                // Sanity check: reasonable product price range for smoke shop items
+                if (price >= 3 && price <= 2000) {
                     prices.push(price);
                 }
             }
@@ -1540,10 +1621,15 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
 
         if (prices.length === 0) return null;
 
-        // If multiple prices found, prefer the first one (usually the main price)
-        // But filter out very low prices that might be shipping costs
-        const mainPrices = prices.filter(p => p >= 5);
-        return mainPrices.length > 0 ? mainPrices[0] : prices[0];
+        // Filter out prices that look like shipping ($5-10) or quantities
+        // Prefer prices in typical product range ($10-500)
+        const productPrices = prices.filter(p => p >= 8 && p <= 1000);
+        if (productPrices.length > 0) {
+            return productPrices[0];
+        }
+
+        // Fallback to any valid price
+        return prices[0];
     }
 
     // Extract price from a competitor page
