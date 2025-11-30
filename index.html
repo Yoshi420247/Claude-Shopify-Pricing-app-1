@@ -1845,19 +1845,22 @@ CRITICAL: EXTRACT PRICES FROM SEARCH RESULTS!
 - Prices like "$24.99", "$45.00", "Price: $30" are all valid
 - If you see ANY price in a search result, INCLUDE that competitor
 
-Quality Tier (for context only - don't exclude based on tier):
+Quality Tier (informational only - NEVER exclude based on tier):
 - This product is: "${originTier}" tier
-- Note tier differences but INCLUDE all relevant competitors
+- Tier is for NOTES ONLY, NOT for filtering
+- INCLUDE ALL tiers - import, domestic, and heady products are ALL valid competitors
 
-BE INCLUSIVE WITH COMPETITORS:
+BE MAXIMALLY INCLUSIVE WITH COMPETITORS:
 - Any smoke shop, head shop, or glass retailer is valid
 - Same product CATEGORY is enough (pendant matches pendant, dabber matches dabber)
 - Don't require exact product matches - similar items count
 - ALWAYS include competitors you find - more data is better
 
-Only exclude:
+Only exclude (strict list - no other reasons!):
 - Wholesale/B2B/distributor sites (selling bulk to businesses)
-- Clearly unrelated products (e.g., car parts for glass search)
+- Marketplace aggregators (Amazon, eBay, Etsy, Alibaba)
+- Completely unrelated products (e.g., car parts when searching for glass)
+NEVER exclude for: tier mismatch, price too high/low, brand differences, or "not exact match"
 
 Known wholesale domains to EXCLUDE: ${WHOLESALE_DOMAINS.slice(0, 5).join(', ')}
 
@@ -1892,7 +1895,7 @@ Respond in JSON format:
   },
   "competitorAnalysis": {
     "kept": [{"source": "store name", "url": "FULL URL to product page", "price": number, "productMatch": "exact|similar|equivalent", "tierMatch": "same|different", "reason": "why kept"}],
-    "excluded": [{"source": "domain", "url": "full URL", "reason": "wholesale|marketplace|out of stock|different product|wrong tier|etc"}],
+    "excluded": [{"source": "domain", "url": "full URL", "reason": "wholesale|marketplace|out of stock|completely unrelated product"}],
     "low": number | null,
     "median": number | null,
     "high": number | null,
@@ -1967,13 +1970,14 @@ Instructions:
 1. IMPORTANT: Extract prices from search results! Look for $XX.XX patterns in titles AND descriptions
 2. Review EXTRACTED PRICES first - these are verified prices we found
 3. Then scan ADDITIONAL SEARCH RESULTS for ANY price mentions (e.g., "$24.99", "Price: $30")
-4. BE INCLUSIVE - keep any result that sells similar products, even if not exact match
+4. BE MAXIMALLY INCLUSIVE - keep any result that sells similar products
 5. For competitor matching: same category is enough (e.g., "glass pendant" matches "glass pendant")
-6. PREFER same quality tier but INCLUDE different tiers with notes - don't exclude just for tier
+6. NEVER EXCLUDE for quality tier differences - import/domestic/heady are ALL valid competitors
 7. Any online retailer selling glass/smoke products counts as a valid competitor
-8. If you find ANY prices at all, use them for analysis
-9. Calculate suggested price based on whatever competitor data you can find
-10. Only use "low confidence" if literally zero prices found anywhere in the results`;
+8. If you find ANY prices at all, use them for analysis - quantity matters!
+9. Calculate suggested price based on ALL competitor data you find (adjust for tier in your reasoning, don't exclude)
+10. Only use "low confidence" if literally zero prices found anywhere in the results
+11. The ONLY valid exclusion reasons are: wholesale/B2B sites, marketplace aggregators (Amazon/eBay), or completely unrelated products`;
 
         const res = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
