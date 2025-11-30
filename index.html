@@ -1259,6 +1259,7 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
         console.log(`Brave API key present: ${settings.braveKey.substring(0, 8)}...`);
 
         const isDeep = options.deep || false;
+        const broadeningLevel = options.broadeningLevel || 0;
         const allResults = [];
         const seenUrls = new Set();
 
@@ -1268,30 +1269,72 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
         const productName = productIdentity.identifiedAs || product.title;
         const originTier = productIdentity.originTier || 'import';
 
-        // Build query list - more queries for deep mode
-        let queries = [
-            // AI-generated queries first
-            ...(productIdentity.searchQueries || []),
-            // Specific product searches
-            `"${product.title}" price`,
-            `${brand} ${productType} buy`,
-            `${productName} smoke shop price`,
-        ];
+        let queries = [];
 
-        // Deep mode: add more query variations
-        if (isDeep) {
-            const extraQueries = [
-                `${productName} head shop`,
-                `${productType} ${originTier === 'heady' ? 'art glass' : ''} price`,
-                `buy ${productName} online`,
-                `${brand} ${productName}`.trim(),
-                `${productType} retail price`,
-                `smoke shop ${productType}`,
+        // Level 0: Specific product queries (first attempt)
+        if (broadeningLevel === 0) {
+            queries = [
+                // AI-generated queries first
+                ...(productIdentity.searchQueries || []),
+                // Specific product searches
+                `"${product.title}" price`,
+                `${brand} ${productType} buy`,
+                `${productName} smoke shop price`,
             ];
-            queries = [...queries, ...extraQueries];
+
+            // Deep mode: add more query variations
+            if (isDeep) {
+                queries.push(
+                    `${productName} head shop`,
+                    `buy ${productName} online`,
+                    `${brand} ${productName}`.trim(),
+                );
+            }
+        }
+        // Level 1: Broader category queries (second attempt)
+        else if (broadeningLevel === 1) {
+            console.log(`[Broadening Level 1] Using category-based queries...`);
+            queries = [
+                `${productType} smoke shop price`,
+                `${productType} head shop buy`,
+                `${productType} online store`,
+                `${productType} retail`,
+                originTier === 'heady' ? `heady ${productType} price` : `${productType} price`,
+                originTier === 'heady' ? 'heady glass pendant price' : null,
+                originTier === 'heady' ? 'art glass pendant buy' : null,
+                `buy ${productType} online`,
+                `${productType} for sale`,
+            ];
+        }
+        // Level 2: Very broad generic queries (third attempt)
+        else if (broadeningLevel >= 2) {
+            console.log(`[Broadening Level 2] Using very broad queries...`);
+            // Use general category and similar product types
+            const generalCategory = productType.toLowerCase().includes('pendant') ? 'glass pendant' :
+                                   productType.toLowerCase().includes('tool') ? 'dab tool' :
+                                   productType.toLowerCase().includes('banger') ? 'quartz banger' :
+                                   productType.toLowerCase().includes('cap') ? 'carb cap' :
+                                   productType.toLowerCase().includes('rig') ? 'dab rig' :
+                                   productType || 'smoke shop accessories';
+
+            queries = [
+                `${generalCategory} smoke shop`,
+                `${generalCategory} price`,
+                `${generalCategory} online`,
+                `buy ${generalCategory}`,
+                `${generalCategory} head shop`,
+                // Also try tier-specific broad searches
+                originTier === 'heady' ? 'heady glass art price' : null,
+                originTier === 'heady' ? 'handmade glass pendant' : null,
+                originTier === 'domestic' ? 'american made glass price' : null,
+                originTier === 'import' ? `cheap ${generalCategory}` : null,
+                // Generic smoke shop searches
+                'smoke shop glass prices',
+                'head shop accessories',
+            ];
         }
 
-        queries = queries.filter(Boolean).slice(0, isDeep ? 10 : 4);
+        queries = queries.filter(Boolean).slice(0, isDeep ? 10 : 6);
         const resultsPerQuery = isDeep ? 15 : 10;
 
         console.log(`[${isDeep ? 'DEEP' : 'Normal'}] Running ${queries.length} queries...`);
@@ -2273,28 +2316,75 @@ Respond in JSON:
             const productIdentity = await identifyProduct(product, settings);
             console.log(`[${product.title}] Identified as: ${productIdentity.identifiedAs}`);
 
-            state.analysisCache[productId] = { analyzing: true, step: `${modeLabel}Searching competitors...`, isDeep };
+            // Step 3: Multi-attempt search with progressively broader strategies
+            let competitorData = { competitors: [], rawResults: [], excluded: [], queries: [] };
+            let searchAttempt = 0;
+            const maxSearchAttempts = 3;
+            let allFoundPrices = [];
+
+            while (searchAttempt < maxSearchAttempts) {
+                searchAttempt++;
+                const attemptLabel = searchAttempt > 1 ? ` (Attempt ${searchAttempt}/${maxSearchAttempts})` : '';
+
+                state.analysisCache[productId] = {
+                    analyzing: true,
+                    step: `Searching competitors${attemptLabel}...`,
+                    isDeep
+                };
+                renderProducts();
+
+                console.log(`[${product.title}] Search attempt ${searchAttempt}/${maxSearchAttempts}`);
+
+                // Get search strategy based on attempt number
+                const searchOptions = {
+                    deep: isDeep,
+                    attempt: searchAttempt,
+                    broadeningLevel: searchAttempt - 1 // 0 = specific, 1 = broader, 2 = broadest
+                };
+
+                const attemptResults = await searchCompetitors(product, productIdentity, settings, searchOptions);
+
+                // Merge results
+                competitorData.queries = [...competitorData.queries, ...attemptResults.queries];
+                for (const comp of attemptResults.competitors) {
+                    if (!allFoundPrices.includes(comp.price)) {
+                        competitorData.competitors.push(comp);
+                        allFoundPrices.push(comp.price);
+                    }
+                }
+                competitorData.rawResults = [...competitorData.rawResults, ...attemptResults.rawResults];
+                competitorData.excluded = [...competitorData.excluded, ...attemptResults.excluded];
+
+                // Check if we have enough data
+                const foundEnough = competitorData.competitors.length >= 2;
+                console.log(`[${product.title}] After attempt ${searchAttempt}: ${competitorData.competitors.length} prices found`);
+
+                if (foundEnough) {
+                    console.log(`[${product.title}] Sufficient competitor data found!`);
+                    break;
+                }
+
+                if (searchAttempt < maxSearchAttempts) {
+                    console.log(`[${product.title}] Not enough data, broadening search...`);
+                }
+            }
+
+            console.log(`[${product.title}] Total: ${competitorData.competitors.length} prices from ${competitorData.queries.length} queries`);
+
+            state.analysisCache[productId] = { analyzing: true, step: 'Analyzing pricing...', isDeep };
             renderProducts();
 
-            // Step 2: Search for competitors and extract verified prices
-            console.log(`[${product.title}] ${modeLabel}Step 2: Searching and extracting prices...`);
-            const competitorData = await searchCompetitors(product, productIdentity, settings, { deep: isDeep });
-            console.log(`[${product.title}] Found ${competitorData.competitors.length} prices + ${(competitorData.rawResults || []).length} raw results from ${competitorData.queries.length} queries`);
-
-            state.analysisCache[productId] = { analyzing: true, step: `${modeLabel}Analyzing pricing...`, isDeep };
-            renderProducts();
-
-            // Step 3: AI analysis with retail focus and fuzzy matching
-            console.log(`[${product.title}] ${modeLabel}Step 3: Analyzing pricing...`);
+            // Step 4: AI analysis with retail focus and fuzzy matching
+            console.log(`[${product.title}] Step 4: Analyzing pricing...`);
             let analysis = await analyzeWithAI(product, competitorData, productIdentity, settings);
             console.log(`[${product.title}] Initial suggested price: $${analysis.suggestedPrice?.toFixed(2)} (${analysis.confidence} confidence, ${analysis.competitorAnalysis?.retailCount || 0} competitors)`);
 
-            // Step 4: If insufficient data, try alternative searches
+            // Step 5: If still insufficient data, try alternative searches
             const hasInsufficientData = (analysis.competitorAnalysis?.retailCount || 0) < 2;
             const hasLowConfidence = analysis.confidence === 'low';
 
             if (hasInsufficientData || hasLowConfidence) {
-                console.log(`[${product.title}] Step 4: Trying alternative search strategies...`);
+                console.log(`[${product.title}] Step 5: Trying alternative search strategies...`);
                 state.analysisCache[productId] = { analyzing: true, step: 'Trying alternative searches...', isDeep };
                 renderProducts();
 
@@ -2308,9 +2398,9 @@ Respond in JSON:
                 }
             }
 
-            // Step 5: Deep deliberation if still uncertain
+            // Step 6: Deep deliberation if still uncertain
             if (hasInsufficientData || hasLowConfidence || !analysis.suggestedPrice) {
-                console.log(`[${product.title}] Step 5: Deliberating on pricing...`);
+                console.log(`[${product.title}] Step 6: Deliberating on pricing...`);
                 state.analysisCache[productId] = { analyzing: true, step: 'Deep deliberation...', isDeep };
                 renderProducts();
 
