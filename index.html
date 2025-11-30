@@ -1926,6 +1926,141 @@ Instructions:
         return allResults;
     }
 
+    // Step 5a: AI self-reflection - when no competitor data found, ask AI to reconsider and generate new queries
+    async function reflectAndGenerateQueries(product, productIdentity, failedQueries, settings) {
+        console.log(`[${product.title}] AI reflecting on failed searches...`);
+
+        const descText = (product.description || product.descriptionHtml?.replace(/<[^>]*>/g, ' ') || '').substring(0, 300);
+
+        const reflectionPrompt = `You are helping find competitor pricing for a smoke shop product. Previous searches returned NO valid competitor data.
+
+PRODUCT INFO:
+- Title: ${product.title}
+- Vendor: ${product.vendor || 'Unknown'}
+- Type: ${productIdentity.productType || 'Unknown'}
+- Identified as: ${productIdentity.identifiedAs || 'Unknown'}
+- Quality Tier: ${productIdentity.originTier || 'unknown'}
+- Description: ${descText || 'None'}
+
+FAILED SEARCH QUERIES (returned no results):
+${failedQueries.slice(0, 10).map((q, i) => `${i + 1}. "${q}"`).join('\n')}
+
+REFLECT: Why might these searches have failed? Consider:
+1. Product name might be too specific or use jargon
+2. Product type might be niche or have multiple names
+3. Searches might need simpler, more common terms
+
+YOUR TASK: Generate 8 NEW search queries that are DIFFERENT from the failed ones. Think creatively:
+- Use common product category names (not brand-specific)
+- Try synonyms and alternative terms
+- Use broader category searches
+- Try searches that target specific smoke shop retailers
+- Use price-focused search terms
+
+Respond in JSON:
+{
+  "reflection": "Brief explanation of why previous searches likely failed",
+  "newQueries": ["query1", "query2", "query3", "query4", "query5", "query6", "query7", "query8"],
+  "alternativeProductNames": ["name1", "name2"],
+  "suggestedCategory": "broader category to search"
+}`;
+
+        try {
+            const res = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${settings.openaiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: 'gpt-4o',
+                    messages: [
+                        { role: 'system', content: 'You are a search optimization expert for e-commerce products. Generate creative, effective search queries.' },
+                        { role: 'user', content: reflectionPrompt }
+                    ],
+                    temperature: 0.7,
+                    max_tokens: 600,
+                    response_format: { type: 'json_object' }
+                })
+            });
+
+            if (!res.ok) {
+                console.warn('Reflection API call failed');
+                return null;
+            }
+
+            const data = await res.json();
+            const reflection = JSON.parse(data.choices[0].message.content);
+            console.log(`[${product.title}] AI reflection: ${reflection.reflection}`);
+            console.log(`[${product.title}] New queries: ${reflection.newQueries?.join(', ')}`);
+            return reflection;
+        } catch (e) {
+            console.error('Reflection error:', e);
+            return null;
+        }
+    }
+
+    // Step 5b: Execute reflection-generated queries
+    async function executeReflectionQueries(queries, settings) {
+        const allResults = [];
+        const seenUrls = new Set();
+
+        for (const query of queries.slice(0, 8)) {
+            const retailQuery = `${query} -wholesale -bulk -distributor -alibaba -dhgate`;
+
+            let searchSuccess = false;
+            let retryCount = 0;
+
+            while (!searchSuccess && retryCount < CORS_PROXIES.length) {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+                    const res = await fetch(
+                        `${CORS_PROXY}https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(retailQuery)}&count=12`,
+                        {
+                            headers: { 'X-Subscription-Token': settings.braveKey },
+                            signal: controller.signal
+                        }
+                    );
+                    clearTimeout(timeoutId);
+
+                    if (res.ok) {
+                        const data = await res.json();
+                        for (const r of (data.web?.results || [])) {
+                            if (!seenUrls.has(r.url)) {
+                                seenUrls.add(r.url);
+                                const snippetPrice = extractPriceFromSnippet(`${r.title} ${r.description}`);
+                                if (snippetPrice) {
+                                    allResults.push({
+                                        source: new URL(r.url).hostname.replace('www.', ''),
+                                        url: r.url,
+                                        title: r.title,
+                                        price: snippetPrice,
+                                        extractionMethod: 'reflection search',
+                                        searchQuery: query
+                                    });
+                                }
+                            }
+                        }
+                        searchSuccess = true;
+                    } else if (res.status === 403 || res.status === 429) {
+                        switchCorsProxy();
+                        retryCount++;
+                    } else {
+                        searchSuccess = true;
+                    }
+                } catch (e) {
+                    switchCorsProxy();
+                    retryCount++;
+                }
+            }
+        }
+
+        console.log(`[Reflection search] Found ${allResults.length} results with prices`);
+        return allResults;
+    }
+
     // Step 5: Deep deliberation when competitor data is insufficient - includes visual analysis
     async function deliberatePricing(product, initialAnalysis, competitorData, productIdentity, settings) {
         const variant = product.variants[0];
@@ -2473,6 +2608,53 @@ Respond in JSON:
                 console.log(`[${product.title}] Final deliberated price: $${analysis.suggestedPrice?.toFixed(2)}`);
             }
 
+            // Step 7: POST-ANALYSIS VALIDATION - If still no competitor data, AI reflects and retries
+            const finalRetailCount = analysis.competitorAnalysis?.retailCount || 0;
+            if (finalRetailCount < 2 && competitorData.queries.length > 0) {
+                console.log(`[${product.title}] Step 7: Post-analysis validation - only ${finalRetailCount} competitors found, triggering AI reflection...`);
+                state.analysisCache[productId] = { analyzing: true, step: 'AI reflecting on search...', isDeep };
+                renderProducts();
+
+                // Ask AI to reflect on why searches failed and generate new queries
+                const reflection = await reflectAndGenerateQueries(product, productIdentity, competitorData.queries, settings);
+
+                if (reflection?.newQueries?.length > 0) {
+                    console.log(`[${product.title}] Executing ${reflection.newQueries.length} reflection-generated queries...`);
+                    state.analysisCache[productId] = { analyzing: true, step: 'Trying AI-suggested searches...', isDeep };
+                    renderProducts();
+
+                    const reflectionResults = await executeReflectionQueries(reflection.newQueries, settings);
+
+                    if (reflectionResults.length > 0) {
+                        console.log(`[${product.title}] Reflection search found ${reflectionResults.length} new competitor prices!`);
+
+                        // Merge new results into competitor data
+                        for (const result of reflectionResults) {
+                            if (!competitorData.competitors.some(c => c.price === result.price)) {
+                                competitorData.competitors.push(result);
+                            }
+                        }
+                        competitorData.queries.push(...reflection.newQueries);
+
+                        // Re-run AI analysis with the new data
+                        state.analysisCache[productId] = { analyzing: true, step: 'Re-analyzing with new data...', isDeep };
+                        renderProducts();
+
+                        const reanalysis = await analyzeWithAI(product, competitorData, productIdentity, settings);
+                        console.log(`[${product.title}] Re-analysis: $${reanalysis.suggestedPrice?.toFixed(2)} (${reanalysis.competitorAnalysis?.retailCount || 0} competitors)`);
+
+                        // Use re-analysis if it found more competitors
+                        if ((reanalysis.competitorAnalysis?.retailCount || 0) > finalRetailCount) {
+                            analysis = reanalysis;
+                            analysis.wasReflectionRetried = true;
+                            console.log(`[${product.title}] Using re-analysis results (found more competitors)`);
+                        }
+                    } else {
+                        console.log(`[${product.title}] Reflection search also found no results`);
+                    }
+                }
+            }
+
             // Store result - only keep essential data to avoid localStorage quota issues
             const trimmedAnalysis = {
                 suggestedPrice: analysis.suggestedPrice,
@@ -2509,7 +2691,8 @@ Respond in JSON:
                 applied: false,
                 isDeep: isDeep,
                 wasDeliberated: analysis.wasDeliberated || false,
-                searchQueries: competitorData.queries.slice(0, 20) // Store queries used for debugging
+                wasReflectionRetried: analysis.wasReflectionRetried || false,
+                searchQueries: competitorData.queries.slice(0, 25) // Store queries used for debugging
             };
 
             state.analysisCache[productId] = trimmedAnalysis;
@@ -2526,7 +2709,8 @@ Respond in JSON:
             }
 
             const deliberatedLabel = analysis.wasDeliberated ? ' [DELIBERATED]' : '';
-            logActivity(`Analysis complete: ${product.title} → $${analysis.suggestedPrice?.toFixed(2) || 'N/A'} (${analysis.confidence} confidence, ${analysis.competitorAnalysis?.retailCount || 0} competitors)${deliberatedLabel}`);
+            const reflectionLabel = analysis.wasReflectionRetried ? ' [AI-RETRIED]' : '';
+            logActivity(`Analysis complete: ${product.title} → $${analysis.suggestedPrice?.toFixed(2) || 'N/A'} (${analysis.confidence} confidence, ${analysis.competitorAnalysis?.retailCount || 0} competitors)${deliberatedLabel}${reflectionLabel}`);
 
         } catch (e) {
             console.error('Analysis error:', e);
