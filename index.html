@@ -658,10 +658,12 @@
     // ============================================================================
     // API INTEGRATIONS
     // ============================================================================
+    // CORS proxies - corsproxy.io works with direct URL concatenation
+    // Note: allorigins requires URL encoding but we handle that in fetch calls
     const CORS_PROXIES = [
         'https://corsproxy.io/?',
-        'https://api.allorigins.win/raw?url=',
-        'https://cors-anywhere.herokuapp.com/'
+        'https://proxy.cors.sh/',
+        'https://api.codetabs.com/v1/proxy?quest='
     ];
     let activeCorsProxyIndex = 0;
     let CORS_PROXY = CORS_PROXIES[0];
@@ -1308,28 +1310,33 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
         // Level 1: Broader category queries (second attempt)
         else if (broadeningLevel === 1) {
             console.log(`[Broadening Level 1] Using category-based queries...`);
+            // Use productType or fall back to product name or generic term
+            const searchType = productType || productName || 'glass accessory';
             queries = [
-                `${productType} smoke shop price`,
-                `${productType} head shop buy`,
-                `${productType} online store`,
-                `${productType} retail`,
-                originTier === 'heady' ? `heady ${productType} price` : `${productType} price`,
+                `${searchType} smoke shop price`,
+                `${searchType} head shop buy`,
+                `${searchType} online store`,
+                `${searchType} retail`,
+                originTier === 'heady' ? `heady ${searchType} price` : `${searchType} price`,
                 originTier === 'heady' ? 'heady glass pendant price' : null,
                 originTier === 'heady' ? 'art glass pendant buy' : null,
-                `buy ${productType} online`,
-                `${productType} for sale`,
+                `buy ${searchType} online`,
+                `${searchType} for sale`,
             ];
         }
         // Level 2: Very broad generic queries (third attempt)
         else if (broadeningLevel >= 2) {
             console.log(`[Broadening Level 2] Using very broad queries...`);
             // Use general category and similar product types
-            const generalCategory = productType.toLowerCase().includes('pendant') ? 'glass pendant' :
-                                   productType.toLowerCase().includes('tool') ? 'dab tool' :
-                                   productType.toLowerCase().includes('banger') ? 'quartz banger' :
-                                   productType.toLowerCase().includes('cap') ? 'carb cap' :
-                                   productType.toLowerCase().includes('rig') ? 'dab rig' :
-                                   productType || 'smoke shop accessories';
+            const typeToCheck = (productType || productName || '').toLowerCase();
+            const generalCategory = typeToCheck.includes('pendant') ? 'glass pendant' :
+                                   typeToCheck.includes('tool') ? 'dab tool' :
+                                   typeToCheck.includes('banger') ? 'quartz banger' :
+                                   typeToCheck.includes('cap') ? 'carb cap' :
+                                   typeToCheck.includes('rig') ? 'dab rig' :
+                                   typeToCheck.includes('pipe') ? 'glass pipe' :
+                                   typeToCheck.includes('bubbler') ? 'bubbler' :
+                                   productType || productName || 'smoke shop accessories';
 
             queries = [
                 `${generalCategory} smoke shop`,
@@ -1376,10 +1383,15 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
                     const searchUrl = `${CORS_PROXY}https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(retailQuery)}&count=${resultsPerQuery}`;
                     console.log(`  Using proxy: ${CORS_PROXY.substring(0, 30)}...`);
 
+                    // Use AbortController for timeout since fetch doesn't support timeout option
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
                     const res = await fetch(searchUrl, {
                         headers: { 'X-Subscription-Token': settings.braveKey },
-                        timeout: 15000
+                        signal: controller.signal
                     });
+                    clearTimeout(timeoutId);
 
                     console.log(`  Response status: ${res.status}`);
 
@@ -2314,10 +2326,10 @@ Respond in JSON:
         document.getElementById('next-page').disabled = state.currentPage >= totalPages;
         document.getElementById('showing-count').textContent = state.filteredProducts.length;
 
-        // Bind checkboxes
+        // Bind checkboxes - keep IDs as strings to match product.id format
         document.querySelectorAll('.product-checkbox').forEach(cb => {
             cb.addEventListener('change', (e) => {
-                const id = parseInt(e.target.dataset.id);
+                const id = e.target.dataset.id; // Keep as string, not parseInt
                 if (e.target.checked) {
                     state.selectedProducts.add(id);
                 } else {
@@ -3055,6 +3067,27 @@ Respond in JSON:
         localStorage.setItem('oilslick_analysis', JSON.stringify(state.analysisCache));
         closeModal();
         renderProducts();
+    }
+
+    function editAndAccept(productId) {
+        const product = state.products.find(p => p.id == productId);
+        const analysis = state.analysisCache[productId];
+        if (!product || !analysis?.suggestedPrice) return;
+
+        const newPrice = prompt(`Edit suggested price for "${product.title}":`, analysis.suggestedPrice.toFixed(2));
+        if (newPrice !== null) {
+            const price = parseFloat(newPrice);
+            if (!isNaN(price) && price > 0) {
+                // Update the analysis with edited price
+                state.analysisCache[productId].suggestedPrice = price;
+                localStorage.setItem('oilslick_analysis', JSON.stringify(state.analysisCache));
+                // Now accept the edited suggestion
+                acceptSuggestion(productId);
+                closeModal();
+            } else {
+                showToast('Invalid price entered', 'error');
+            }
+        }
     }
 
     function editCost(productId, variantId) {
