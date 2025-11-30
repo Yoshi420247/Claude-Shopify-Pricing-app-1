@@ -658,29 +658,77 @@
     // ============================================================================
     // API INTEGRATIONS
     // ============================================================================
-    // CORS proxies that forward headers - corsproxy.io is most reliable
+    // CORS proxies - corsproxy.io forwards headers (required for Brave API key)
+    // IMPORTANT: File:// origin won't work - must run from local server!
     const CORS_PROXIES = [
-        'https://corsproxy.io/?',
-        'https://cors.bridged.cc/',
-        ''  // Empty = try direct call (works if running from allowed origin)
+        { url: 'https://corsproxy.io/?', encodeUrl: false, name: 'corsproxy' },
+        { url: '', encodeUrl: false, name: 'direct' }
     ];
     let activeCorsProxyIndex = 0;
-    let CORS_PROXY = CORS_PROXIES[0];
-    let lastWorkingProxy = CORS_PROXIES[0]; // Track which proxy actually worked
+    let currentProxy = CORS_PROXIES[0];
+    let lastWorkingProxy = CORS_PROXIES[0];
+    let corsErrorShown = false;
+
+    // Get current proxy URL prefix
+    function getCorsProxy() {
+        return currentProxy.url;
+    }
+
+    // Build URL with appropriate proxy
+    function buildProxyUrl(targetUrl) {
+        if (!currentProxy.url) return targetUrl;
+        if (currentProxy.encodeUrl) {
+            return `${currentProxy.url}${encodeURIComponent(targetUrl)}`;
+        }
+        return `${currentProxy.url}${targetUrl}`;
+    }
 
     // Try next CORS proxy if current one fails
     function switchCorsProxy() {
         activeCorsProxyIndex = (activeCorsProxyIndex + 1) % CORS_PROXIES.length;
-        CORS_PROXY = CORS_PROXIES[activeCorsProxyIndex];
-        console.log(`Switched to CORS proxy: ${CORS_PROXY || '(direct call)'}`);
-        return CORS_PROXY;
+        currentProxy = CORS_PROXIES[activeCorsProxyIndex];
+        console.log(`Switched to CORS proxy: ${currentProxy.name}`);
+        return currentProxy;
     }
 
     // Reset to last known working proxy
     function useWorkingProxy() {
-        CORS_PROXY = lastWorkingProxy;
+        currentProxy = lastWorkingProxy;
         activeCorsProxyIndex = CORS_PROXIES.indexOf(lastWorkingProxy);
     }
+
+    // Show CORS error help once
+    function showCorsHelp() {
+        if (corsErrorShown) return;
+        corsErrorShown = true;
+        showToast('CORS error - see console for solution', 'error');
+        console.error(`
+╔══════════════════════════════════════════════════════════════════════════════╗
+║ CORS ERROR - Browser is blocking API requests from file:// origin            ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║                                                                              ║
+║ SOLUTION: Run a local web server instead of opening the file directly:       ║
+║                                                                              ║
+║   Option 1 - Python (easiest):                                               ║
+║     1. Open terminal/command prompt                                          ║
+║     2. cd to the folder containing index.html                                ║
+║     3. Run: python -m http.server 8000                                       ║
+║     4. Open: http://localhost:8000/index.html                                ║
+║                                                                              ║
+║   Option 2 - Node.js:                                                        ║
+║     1. Run: npx serve                                                        ║
+║     2. Open the URL it displays                                              ║
+║                                                                              ║
+║   Option 3 - VS Code:                                                        ║
+║     1. Install "Live Server" extension                                       ║
+║     2. Right-click index.html → "Open with Live Server"                      ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+        `);
+    }
+
+    // Legacy getter for backward compatibility
+    const CORS_PROXY = 'https://corsproxy.io/?';
 
     async function testConnections() {
         const resultsEl = document.getElementById('connection-results');
@@ -1389,6 +1437,11 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
             console.error('WARNING: No queries generated! Check productIdentity:', productIdentity);
         }
 
+        // Check if running from file:// (will cause CORS issues)
+        if (window.location.protocol === 'file:') {
+            console.warn('⚠️ Running from file:// - CORS proxies may not work!');
+        }
+
         // Search for results with retry logic
         for (const query of queries) {
             const retailQuery = `${query} -wholesale -bulk -distributor -alibaba -dhgate -ebay`;
@@ -1400,10 +1453,11 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
 
             while (!searchSuccess && retryCount < maxRetries) {
                 try {
-                    const searchUrl = `${CORS_PROXY}https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(retailQuery)}&count=${resultsPerQuery}`;
-                    console.log(`  Using proxy: ${CORS_PROXY.substring(0, 30)}...`);
+                    const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(retailQuery)}&count=${resultsPerQuery}`;
+                    const searchUrl = buildProxyUrl(braveUrl);
+                    console.log(`  Using proxy: ${currentProxy.name} → ${searchUrl.substring(0, 60)}...`);
 
-                    // Use AbortController for timeout since fetch doesn't support timeout option
+                    // Use AbortController for timeout
                     const controller = new AbortController();
                     const timeoutId = setTimeout(() => controller.abort(), 15000);
 
@@ -1421,7 +1475,7 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
                         console.log(`  ✓ Got ${resultCount} results for "${query.substring(0, 30)}..."`);
 
                         // Track that this proxy works
-                        lastWorkingProxy = CORS_PROXY;
+                        lastWorkingProxy = currentProxy;
 
                         // Log first few results for debugging
                         if (resultCount > 0 && data.web.results[0]) {
@@ -1447,7 +1501,15 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
                         searchSuccess = true; // Don't retry for other errors
                     }
                 } catch (e) {
-                    console.warn(`  Fetch failed: ${e.message}, trying next proxy...`);
+                    // Check if this is a CORS error
+                    if (e.message.includes('CORS') || e.message.includes('Failed to fetch') || e.name === 'TypeError') {
+                        console.error(`  ❌ CORS/Network error: ${e.message}`);
+                        if (window.location.protocol === 'file:') {
+                            showCorsHelp();
+                        }
+                    } else {
+                        console.warn(`  Fetch failed: ${e.message}`);
+                    }
                     switchCorsProxy();
                     retryCount++;
                 }
@@ -1466,7 +1528,12 @@ ${!product.image ? '\nNOTE: No product image available. Rely on title, descripti
             });
             console.log('=================================');
         } else {
-            console.warn('⚠️ NO SEARCH RESULTS RETURNED - Check Brave API key and CORS proxy');
+            console.warn('⚠️ NO SEARCH RESULTS RETURNED');
+            if (window.location.protocol === 'file:') {
+                showCorsHelp();
+            } else {
+                console.warn('   Check: 1) Brave API key is valid  2) CORS proxy is working');
+            }
         }
 
         // Process results - extract prices from snippets and categorize
@@ -3689,6 +3756,16 @@ Respond in JSON:
         // Initial view
         state.filteredProducts = [...state.products];
         navigateTo('dashboard');
+
+        // Check if running from file:// and warn user
+        if (window.location.protocol === 'file:') {
+            setTimeout(() => {
+                showToast('⚠️ Running from file:// - Search may not work. Use a local server.', 'warning');
+                console.warn('⚠️ Running from file:// protocol - CORS proxies will likely fail!');
+                console.warn('   Run: python -m http.server 8000');
+                console.warn('   Then open: http://localhost:8000/index.html');
+            }, 1000);
+        }
 
         // If we have products, render them
         if (state.products.length > 0) {
