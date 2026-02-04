@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "src/app/api/shopify/sync/route.ts": {
+      "maxDuration": 300
+    },
+    "src/app/api/analysis/analyze/route.ts": {
+      "maxDuration": 120
+    }
+  }
+}
