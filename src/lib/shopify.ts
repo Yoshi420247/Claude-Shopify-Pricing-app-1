@@ -64,7 +64,8 @@ async function shopifyGraphQL(query: string, variables: Record<string, unknown> 
 
 // Fetch ALL products with variants and costs via GraphQL pagination
 export async function fetchAllProducts() {
-  const query = `
+  // Query with cost data (requires read_inventory scope)
+  const queryWithCost = `
     query getProductsWithCost($cursor: String) {
       products(first: 100, after: $cursor) {
         pageInfo { hasNextPage endCursor }
@@ -101,22 +102,69 @@ export async function fetchAllProducts() {
     }
   `;
 
+  // Fallback query without cost data (if read_inventory scope is missing)
+  const queryWithoutCost = `
+    query getProducts($cursor: String) {
+      products(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        edges {
+          node {
+            id
+            title
+            description
+            descriptionHtml
+            vendor
+            productType
+            handle
+            tags
+            status
+            featuredImage { url }
+            variants(first: 100) {
+              edges {
+                node {
+                  id
+                  title
+                  sku
+                  price
+                  compareAtPrice
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
   const allProducts: ShopifyProductNode[] = [];
   let hasNextPage = true;
   let cursor: string | null = null;
   let pageCount = 0;
+  let useFallback = false;
 
   while (hasNextPage) {
     pageCount++;
-    const data = await shopifyGraphQL(query, { cursor });
-    const products = data.products;
+    try {
+      const query = useFallback ? queryWithoutCost : queryWithCost;
+      const data = await shopifyGraphQL(query, { cursor });
+      const products = data.products;
 
-    for (const edge of products.edges) {
-      allProducts.push(edge.node);
+      for (const edge of products.edges) {
+        allProducts.push(edge.node);
+      }
+
+      hasNextPage = products.pageInfo.hasNextPage;
+      cursor = products.pageInfo.endCursor;
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      // If we get an access denied error on first page, try fallback query
+      if (pageCount === 1 && !useFallback && message.includes('access')) {
+        console.warn('Cost data access denied, retrying without inventory data');
+        useFallback = true;
+        continue;
+      }
+      throw e;
     }
-
-    hasNextPage = products.pageInfo.hasNextPage;
-    cursor = products.pageInfo.endCursor;
 
     if (pageCount > 200) {
       console.warn('Hit Shopify pagination safety limit at 200 pages');
@@ -124,6 +172,7 @@ export async function fetchAllProducts() {
     }
   }
 
+  console.log(`Fetched ${allProducts.length} products in ${pageCount} pages (usedFallback: ${useFallback})`);
   return allProducts;
 }
 
