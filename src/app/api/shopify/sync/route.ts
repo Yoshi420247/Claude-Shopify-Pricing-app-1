@@ -8,7 +8,21 @@ export const maxDuration = 300;
 export async function POST() {
   try {
     const db = createServerClient();
+
+    console.log('Starting Shopify sync...');
     const shopifyProducts = await fetchAllProducts();
+    console.log(`Fetched ${shopifyProducts.length} products from Shopify`);
+
+    if (shopifyProducts.length === 0) {
+      // Return debug info when no products found
+      return NextResponse.json({
+        success: true,
+        productsCount: 0,
+        variantsCount: 0,
+        costsLoaded: 0,
+        debug: 'No products returned from Shopify API. Check: 1) Store has products, 2) API token has read_products scope, 3) Products are not all archived/draft',
+      });
+    }
 
     let productsUpserted = 0;
     let variantsUpserted = 0;
