@@ -1,4 +1,4 @@
-// Server-side OpenAI client using GPT-5.2 with reasoning
+// Server-side OpenAI client using GPT-4o (most capable model)
 
 function getOpenAIKey(): string {
   const key = process.env.OPENAI_API_KEY;
@@ -6,9 +6,8 @@ function getOpenAIKey(): string {
   return key;
 }
 
-// Default to gpt-5.2 with high reasoning. Users with Pro access can set gpt-5.2-pro.
-const DEFAULT_MODEL = 'gpt-5.2';
-const REASONING_EFFORT = 'high';
+// Use GPT-4o as default - best balance of capability and speed
+const DEFAULT_MODEL = 'gpt-4o';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -27,33 +26,21 @@ interface ChatCompletionOptions {
   temperature?: number;
   maxTokens?: number;
   jsonMode?: boolean;
-  reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 }
 
 export async function chatCompletion(options: ChatCompletionOptions): Promise<string> {
   const key = getOpenAIKey();
   const model = options.model || DEFAULT_MODEL;
-  const reasoningEffort = options.reasoningEffort || REASONING_EFFORT;
 
   const body: Record<string, unknown> = {
     model,
     messages: options.messages,
     max_tokens: options.maxTokens || 4000,
+    temperature: options.temperature ?? 0.3, // Lower temp for more consistent analysis
   };
 
-  // GPT-5.2 uses reasoning.effort instead of temperature
-  if (model.startsWith('gpt-5')) {
-    body.reasoning = { effort: reasoningEffort };
-    // JSON mode via response_format
-    if (options.jsonMode) {
-      body.response_format = { type: 'json_object' };
-    }
-  } else {
-    // Fallback for older models
-    body.temperature = options.temperature || 0.4;
-    if (options.jsonMode) {
-      body.response_format = { type: 'json_object' };
-    }
+  if (options.jsonMode) {
+    body.response_format = { type: 'json_object' };
   }
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {

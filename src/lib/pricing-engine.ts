@@ -1,4 +1,4 @@
-// Core AI pricing analysis pipeline using GPT-5.2 with reasoning
+// Core AI pricing analysis pipeline using GPT-4o
 // Handles: product identification → competitor search → AI pricing → deliberation
 
 import { chatCompletion, parseAIJson } from './openai';
@@ -93,7 +93,6 @@ Respond in JSON:
     ],
     maxTokens: 1200,
     jsonMode: true,
-    reasoningEffort: 'high',
   });
 
   return parseAIJson<ProductIdentity>(raw);
@@ -222,7 +221,6 @@ Instructions:
     ],
     maxTokens: 3000,
     jsonMode: true,
-    reasoningEffort: 'high',
   });
 
   return parseAIJson<AnalysisResult>(raw);
@@ -316,7 +314,6 @@ Respond in JSON:
     ],
     maxTokens: 2000,
     jsonMode: true,
-    reasoningEffort: 'high',
   });
 
   return parseAIJson<DeliberationResult>(raw);
@@ -362,7 +359,6 @@ Respond in JSON:
       ],
       maxTokens: 500,
       jsonMode: true,
-      reasoningEffort: 'medium',
     });
 
     const result = parseAIJson<{ newQueries: string[] }>(raw);
@@ -396,7 +392,7 @@ export async function runFullAnalysis(
   wasReflectionRetried: boolean;
   error: string | null;
 }> {
-  const model = settings.openai_model || 'gpt-5.2';
+  const model = settings.openai_model || 'gpt-4o';
 
   try {
     // Step 1: Identify product
