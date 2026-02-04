@@ -157,9 +157,10 @@ export async function fetchAllProducts() {
       cursor = products.pageInfo.endCursor;
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
-      // If we get an access denied error on first page, try fallback query
-      if (pageCount === 1 && !useFallback && message.includes('access')) {
-        console.warn('Cost data access denied, retrying without inventory data');
+      // If we get ANY error on first page with inventory query, try fallback query without cost data
+      // This handles scope issues, permission errors, or any GraphQL field errors
+      if (pageCount === 1 && !useFallback) {
+        console.warn(`Error with inventory query (${message.slice(0, 150)}), retrying without cost data`);
         useFallback = true;
         continue;
       }
