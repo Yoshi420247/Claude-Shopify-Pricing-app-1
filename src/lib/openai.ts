@@ -1,4 +1,4 @@
-// Server-side OpenAI client using GPT-4o (most capable model)
+// Server-side OpenAI client using GPT-5.2 (most capable model)
 
 function getOpenAIKey(): string {
   const key = process.env.OPENAI_API_KEY;
@@ -6,8 +6,8 @@ function getOpenAIKey(): string {
   return key;
 }
 
-// Use GPT-4o as default - best balance of capability and speed
-const DEFAULT_MODEL = 'gpt-4o';
+// Use GPT-5.2 as default - best reasoning and vision capabilities
+const DEFAULT_MODEL = 'gpt-5.2';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -26,25 +26,39 @@ interface ChatCompletionOptions {
   temperature?: number;
   maxTokens?: number;
   jsonMode?: boolean;
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 }
 
 export async function chatCompletion(options: ChatCompletionOptions): Promise<string> {
   const key = getOpenAIKey();
   const model = options.model || DEFAULT_MODEL;
 
-  // o1 models use different parameters
+  // GPT-5.x and o1 models use max_completion_tokens
+  const isGPT5 = model.startsWith('gpt-5');
   const isO1Model = model.startsWith('o1');
+  const useNewParams = isGPT5 || isO1Model;
 
   const body: Record<string, unknown> = {
     model,
     messages: options.messages,
   };
 
-  // o1 models use max_completion_tokens, others use max_tokens
-  if (isO1Model) {
+  if (useNewParams) {
+    // GPT-5.x uses max_completion_tokens
     body.max_completion_tokens = options.maxTokens || 4000;
+
+    // GPT-5.2 supports reasoning_effort parameter
+    if (isGPT5 && options.reasoningEffort) {
+      body.reasoning = { effort: options.reasoningEffort };
+    }
+
+    // GPT-5.x supports JSON mode
+    if (isGPT5 && options.jsonMode) {
+      body.response_format = { type: 'json_object' };
+    }
     // o1 doesn't support temperature or response_format
   } else {
+    // Legacy models (GPT-4, etc)
     body.max_tokens = options.maxTokens || 4000;
     body.temperature = options.temperature ?? 0.3;
     if (options.jsonMode) {
