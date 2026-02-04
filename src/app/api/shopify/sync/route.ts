@@ -5,6 +5,9 @@ import { createServerClient } from '@/lib/supabase';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
+// Batch size for Supabase upserts
+const BATCH_SIZE = 100;
+
 export async function POST() {
   try {
     const db = createServerClient();
@@ -14,7 +17,6 @@ export async function POST() {
     console.log(`Fetched ${shopifyProducts.length} products from Shopify`);
 
     if (shopifyProducts.length === 0) {
-      // Return debug info when no products found
       return NextResponse.json({
         success: true,
         productsCount: 0,
@@ -24,15 +26,40 @@ export async function POST() {
       });
     }
 
-    let productsUpserted = 0;
-    let variantsUpserted = 0;
+    // Prepare all products and variants for batch upsert
+    const productRows: Array<{
+      id: string;
+      title: string;
+      description: string | null;
+      description_html: string | null;
+      vendor: string | null;
+      product_type: string | null;
+      handle: string | null;
+      tags: string | null;
+      status: string;
+      image_url: string | null;
+      shopify_gid: string;
+      synced_at: string;
+    }> = [];
+
+    const variantRows: Array<{
+      id: string;
+      product_id: string;
+      title: string | null;
+      sku: string | null;
+      price: number;
+      compare_at_price: number | null;
+      cost: number | null;
+      inventory_item_id: string | null;
+      shopify_gid: string;
+    }> = [];
+
     let costsLoaded = 0;
 
     for (const sp of shopifyProducts) {
       const productId = extractId(sp.id);
 
-      // Upsert product
-      const { error: pErr } = await db.from('products').upsert({
+      productRows.push({
         id: productId,
         title: sp.title,
         description: sp.description || null,
@@ -45,15 +72,8 @@ export async function POST() {
         image_url: sp.featuredImage?.url || null,
         shopify_gid: sp.id,
         synced_at: new Date().toISOString(),
-      }, { onConflict: 'id' });
+      });
 
-      if (pErr) {
-        console.error(`Failed to upsert product ${productId}:`, pErr);
-        continue;
-      }
-      productsUpserted++;
-
-      // Upsert variants
       for (const ve of sp.variants.edges) {
         const v = ve.node;
         const variantId = extractId(v.id);
@@ -64,7 +84,7 @@ export async function POST() {
 
         if (cost !== null) costsLoaded++;
 
-        const { error: vErr } = await db.from('variants').upsert({
+        variantRows.push({
           id: variantId,
           product_id: productId,
           title: v.title || null,
@@ -74,15 +94,37 @@ export async function POST() {
           cost,
           inventory_item_id: inventoryItemId,
           shopify_gid: v.id,
-        }, { onConflict: 'id' });
-
-        if (vErr) {
-          console.error(`Failed to upsert variant ${variantId}:`, vErr);
-          continue;
-        }
-        variantsUpserted++;
+        });
       }
     }
+
+    console.log(`Prepared ${productRows.length} products and ${variantRows.length} variants for upsert`);
+
+    // Batch upsert products
+    let productsUpserted = 0;
+    for (let i = 0; i < productRows.length; i += BATCH_SIZE) {
+      const batch = productRows.slice(i, i + BATCH_SIZE);
+      const { error } = await db.from('products').upsert(batch, { onConflict: 'id' });
+      if (error) {
+        console.error(`Failed to upsert product batch ${i / BATCH_SIZE + 1}:`, error.message);
+      } else {
+        productsUpserted += batch.length;
+      }
+    }
+    console.log(`Upserted ${productsUpserted} products`);
+
+    // Batch upsert variants
+    let variantsUpserted = 0;
+    for (let i = 0; i < variantRows.length; i += BATCH_SIZE) {
+      const batch = variantRows.slice(i, i + BATCH_SIZE);
+      const { error } = await db.from('variants').upsert(batch, { onConflict: 'id' });
+      if (error) {
+        console.error(`Failed to upsert variant batch ${i / BATCH_SIZE + 1}:`, error.message);
+      } else {
+        variantsUpserted += batch.length;
+      }
+    }
+    console.log(`Upserted ${variantsUpserted} variants`);
 
     // Log activity
     await db.from('activity_log').insert({
