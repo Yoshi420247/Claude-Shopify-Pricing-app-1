@@ -14,59 +14,88 @@ export async function GET() {
     });
   }
 
-  // Simple GraphQL query to test access
-  const query = `
+  const url = `https://${store}.myshopify.com/admin/api/2024-10/graphql.json`;
+  const results: Record<string, unknown> = { url };
+
+  // Test 1: Simple query
+  const simpleQuery = `
+    query {
+      products(first: 5) {
+        edges {
+          node { id title status }
+        }
+      }
+    }
+  `;
+
+  try {
+    const res1 = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'X-Shopify-Access-Token': token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query: simpleQuery }),
+    });
+    const data1 = await res1.json();
+    results.simpleQuery = {
+      status: res1.status,
+      productCount: data1?.data?.products?.edges?.length || 0,
+      products: data1?.data?.products?.edges?.map((e: { node: { id: string; title: string; status: string } }) => ({
+        title: e.node.title,
+        status: e.node.status,
+      })) || [],
+      errors: data1?.errors || null,
+    };
+  } catch (e) {
+    results.simpleQuery = { error: e instanceof Error ? e.message : 'Unknown error' };
+  }
+
+  // Test 2: Query WITH inventory (the one that might fail)
+  const inventoryQuery = `
     query {
       products(first: 5) {
         edges {
           node {
             id
             title
-            status
+            variants(first: 5) {
+              edges {
+                node {
+                  id
+                  price
+                  inventoryItem {
+                    unitCost { amount currencyCode }
+                  }
+                }
+              }
+            }
           }
         }
       }
     }
   `;
 
-  const url = `https://${store}.myshopify.com/admin/api/2024-10/graphql.json`;
-
   try {
-    const res = await fetch(url, {
+    const res2 = await fetch(url, {
       method: 'POST',
       headers: {
         'X-Shopify-Access-Token': token,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query: inventoryQuery }),
     });
-
-    const status = res.status;
-    const body = await res.text();
-
-    let parsed;
-    try {
-      parsed = JSON.parse(body);
-    } catch {
-      parsed = null;
-    }
-
-    return NextResponse.json({
-      url,
-      httpStatus: status,
-      hasErrors: !!parsed?.errors,
-      errors: parsed?.errors || null,
-      productCount: parsed?.data?.products?.edges?.length || 0,
-      products: parsed?.data?.products?.edges?.map((e: { node: { id: string; title: string; status: string } }) => ({
-        id: e.node.id,
-        title: e.node.title,
-        status: e.node.status,
-      })) || [],
-      rawBody: body.slice(0, 1000),
-    });
-  } catch (e: unknown) {
-    return NextResponse.json({
-      error: e instanceof Error ? e.message : 'Unknown error',
-    });
+    const data2 = await res2.json();
+    results.inventoryQuery = {
+      status: res2.status,
+      productCount: data2?.data?.products?.edges?.length || 0,
+      hasInventoryData: !!data2?.data?.products?.edges?.[0]?.node?.variants?.edges?.[0]?.node?.inventoryItem,
+      errors: data2?.errors || null,
+      sample: data2?.data?.products?.edges?.[0] || null,
+    };
+  } catch (e) {
+    results.inventoryQuery = { error: e instanceof Error ? e.message : 'Unknown error' };
   }
+
+  return NextResponse.json(results);
 }
