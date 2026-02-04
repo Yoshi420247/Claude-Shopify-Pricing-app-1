@@ -47,9 +47,9 @@ export async function chatCompletion(options: ChatCompletionOptions): Promise<st
     // GPT-5.x uses max_completion_tokens
     body.max_completion_tokens = options.maxTokens || 4000;
 
-    // GPT-5.2 supports reasoning_effort parameter
+    // GPT-5.2 supports reasoning_effort parameter (top-level for Chat Completions API)
     if (isGPT5 && options.reasoningEffort) {
-      body.reasoning = { effort: options.reasoningEffort };
+      body.reasoning_effort = options.reasoningEffort;
     }
 
     // GPT-5.x supports JSON mode
