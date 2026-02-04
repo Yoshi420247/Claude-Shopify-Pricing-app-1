@@ -140,10 +140,44 @@ export async function updateVariantPrice(variantId: string, newPrice: number) {
 // Test the Shopify connection
 export async function testConnection() {
   try {
-    const data = await shopifyFetch('shop.json');
+    // Check env vars first
+    const store = process.env.SHOPIFY_STORE_NAME;
+    const token = process.env.SHOPIFY_ACCESS_TOKEN;
+
+    if (!store) {
+      return { success: false, error: 'SHOPIFY_STORE_NAME env var not set' };
+    }
+    if (!token) {
+      return { success: false, error: 'SHOPIFY_ACCESS_TOKEN env var not set' };
+    }
+
+    // Check if store name looks wrong
+    if (store.includes('.myshopify.com') || store.includes('http')) {
+      return { success: false, error: `SHOPIFY_STORE_NAME should be just the store name (e.g., "my-store"), not "${store}"` };
+    }
+
+    const url = `https://${store}.myshopify.com/admin/api/${SHOPIFY_API_VERSION}/shop.json`;
+
+    const res = await fetch(url, {
+      headers: {
+        'X-Shopify-Access-Token': token,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      return { success: false, error: `Shopify API ${res.status}: ${body.slice(0, 200)}` };
+    }
+
+    const data = await res.json();
     return { success: true, shopName: data.shop?.name };
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';
+    // Add more context for common errors
+    if (message.includes('fetch failed') || message.includes('ENOTFOUND')) {
+      return { success: false, error: `Network error - check SHOPIFY_STORE_NAME is correct. Error: ${message}` };
+    }
     return { success: false, error: message };
   }
 }
