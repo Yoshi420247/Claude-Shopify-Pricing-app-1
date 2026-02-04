@@ -32,15 +32,24 @@ export async function chatCompletion(options: ChatCompletionOptions): Promise<st
   const key = getOpenAIKey();
   const model = options.model || DEFAULT_MODEL;
 
+  // o1 models use different parameters
+  const isO1Model = model.startsWith('o1');
+
   const body: Record<string, unknown> = {
     model,
     messages: options.messages,
-    max_tokens: options.maxTokens || 4000,
-    temperature: options.temperature ?? 0.3, // Lower temp for more consistent analysis
   };
 
-  if (options.jsonMode) {
-    body.response_format = { type: 'json_object' };
+  // o1 models use max_completion_tokens, others use max_tokens
+  if (isO1Model) {
+    body.max_completion_tokens = options.maxTokens || 4000;
+    // o1 doesn't support temperature or response_format
+  } else {
+    body.max_tokens = options.maxTokens || 4000;
+    body.temperature = options.temperature ?? 0.3;
+    if (options.jsonMode) {
+      body.response_format = { type: 'json_object' };
+    }
   }
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
