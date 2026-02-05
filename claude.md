@@ -44,18 +44,23 @@ When insufficient competitor data is found:
 - Category norms evaluation
 - Uses maximum reasoning effort for best results
 
-### 5. Smart Batch Processing
+### 5. Smart Batch Processing (Legacy - Dashboard)
 - Groups products by vendor + product type
 - Priority scoring based on revenue impact
 - Respects API rate limits (Brave: 0.5 req/sec, OpenAI: 5 req/sec)
 - Processes highest-priority items first
-- Progress tracking with cancellation support
 
-### 6. Bulk Analysis from Products Page
-- Analyze all visible (filtered) variants or selected variants
-- Concurrent processing (1-10 parallel, configurable)
-- Real-time progress bar with shimmer animation
-- Cancel button to stop mid-batch
+### 6. Persistent Batch Analysis (Products Page - Primary)
+- **Database-backed batch jobs** that survive page refreshes, browser crashes, and deployments
+- Select any number of products (even thousands) and process in configurable chunks (10-200)
+- Auto-resume on page load: if a batch was running when the page refreshed, it picks up where it left off
+- **Auto-Apply mode**: AI analyzes and immediately updates prices on Shopify, no manual review
+- **AI Unlimited mode**: removes all pricing guardrails (margin floors, MSRP limits, change caps)
+- **Full Autopilot**: combine both modes to let AI decide and apply all prices autonomously
+- Progress saved after each variant (not just per chunk), so minimal work is lost on crash
+- Cancel at any time with all progress preserved
+- After batch completes, "Apply All Suggestions" button bulk-applies to Shopify
+- Configuration modal with chunk size slider, AI Unlimited checkbox, Auto-Apply checkbox
 
 ## Architecture
 
@@ -74,6 +79,8 @@ When insufficient competitor data is found:
 │  /api/analysis/batch    │  /api/shopify/update-price            │
 │  /api/analysis/worker   │  /api/shopify/test                    │
 │  /api/analysis/accept   │  /api/settings                        │
+│  /api/batch (create/status) │  /api/batch/process               │
+│  /api/batch/apply       │  /api/batch/cancel                    │
 │  /api/test-connections                                          │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -154,6 +161,7 @@ When insufficient competitor data is found:
 - `001_initial_schema.sql` - Core tables, indexes, RLS, triggers
 - `002_analysis_queue.sql` - Batch processing tables
 - `003_add_ai_unrestricted_and_fix_rls.sql` - ai_unrestricted column, secure settings view
+- `004_batch_jobs.sql` - Persistent batch job table for crash-safe batch analysis
 
 ## Environment Variables
 
@@ -206,6 +214,8 @@ BRAVE_API_KEY=BSAxxxxx
 9. **below_floor Filter Hardcoded** - Product filter for "Below Floor" was hardcoded to 20% instead of using the user's `settings.min_margin` value. Fixed.
 
 10. **Database Schema Missing ai_unrestricted** - Added migration 003 to add the `ai_unrestricted` column to settings and create a secure view that excludes API key columns.
+
+11. **Persistent Batch System** - Replaced in-memory batch processing with a database-backed system. New `batch_jobs` table stores all batch state (variant IDs, progress, settings). Processing automatically resumes after page refreshes. Added auto-apply mode, AI unlimited mode, configurable chunk sizes, and bulk apply for completed batches.
 
 ### Previous Issues (Resolved in Earlier Sessions)
 

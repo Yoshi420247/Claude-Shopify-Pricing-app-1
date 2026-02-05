@@ -12,6 +12,24 @@ interface VariantRow extends Variant {
   analysis: Analysis | null;
 }
 
+interface BatchJob {
+  id: string;
+  name: string;
+  totalVariants: number;
+  chunkSize: number;
+  autoApply: boolean;
+  aiUnrestricted: boolean;
+  completed: number;
+  failed: number;
+  applied: number;
+  status: 'pending' | 'running' | 'paused' | 'completed' | 'cancelled';
+  currentChunk: number;
+  lastError: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
 const defaultSettings: Partial<Settings> = {
   min_margin: 20,
   min_margin_dollars: 3,
@@ -32,7 +50,7 @@ export default function ProductsContent() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState(searchParams.get('status') || '');
-  const [productStatusFilter, setProductStatusFilter] = useState(''); // ACTIVE, DRAFT, etc.
+  const [productStatusFilter, setProductStatusFilter] = useState('');
   const [vendorFilter, setVendorFilter] = useState('');
   const [sortBy, setSortBy] = useState('name-asc');
   const [page, setPage] = useState(1);
@@ -42,19 +60,21 @@ export default function ProductsContent() {
   const [modalVariant, setModalVariant] = useState<VariantRow | null>(null);
   const [settings, setSettings] = useState<Partial<Settings>>(defaultSettings);
 
-  // Bulk analysis progress tracking
-  const [bulkProgress, setBulkProgress] = useState<{
-    total: number;
-    completed: number;
-    failed: number;
-    currentItems: string[];
-    startedAt: number;
-  } | null>(null);
-  const cancelBulkRef = useRef(false);
+  // Persistent batch state
+  const [activeBatch, setActiveBatch] = useState<BatchJob | null>(null);
+  const [batchProcessing, setBatchProcessing] = useState(false);
+  const cancelBatchRef = useRef(false);
+  const [applying, setApplying] = useState(false);
+
+  // Batch creation options
+  const [showBatchConfig, setShowBatchConfig] = useState(false);
+  const [batchAutoApply, setBatchAutoApply] = useState(false);
+  const [batchAiUnrestricted, setBatchAiUnrestricted] = useState(false);
+  const [batchChunkSize, setBatchChunkSize] = useState(50);
 
   const vendors = [...new Set(rows.map(r => r.product.vendor).filter(Boolean))] as string[];
 
-  // Load settings (merge localStorage for ai_unrestricted)
+  // Load settings
   useEffect(() => {
     async function loadSettings() {
       try {
@@ -62,7 +82,6 @@ export default function ProductsContent() {
         const data = await res.json();
         if (data.success && data.settings) {
           const merged = { ...defaultSettings, ...data.settings };
-          // Always use localStorage for ai_unrestricted (DB column may not exist)
           const storedUnrestricted = localStorage.getItem('ai_unrestricted');
           if (storedUnrestricted !== null) {
             merged.ai_unrestricted = storedUnrestricted === 'true';
@@ -76,91 +95,83 @@ export default function ProductsContent() {
     loadSettings();
   }, []);
 
+  // Check for active batch on page load (resume detection)
+  useEffect(() => {
+    async function checkActiveBatch() {
+      try {
+        const res = await fetch('/api/batch');
+        const data = await res.json();
+        if (data.success && data.hasActiveBatch && data.batch) {
+          setActiveBatch(data.batch);
+          // Auto-resume if batch is running
+          if (data.batch.status === 'running' || data.batch.status === 'pending') {
+            resumeBatchProcessing(data.batch.id);
+          }
+        } else if (data.success && data.batch && data.batch.status === 'completed') {
+          // Show completed batch so user can apply results
+          setActiveBatch(data.batch);
+        }
+      } catch (e) {
+        console.error('Batch check error:', e);
+      }
+    }
+    checkActiveBatch();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Load all products + variants + analyses
   const loadData = useCallback(async () => {
     try {
-      // Fetch products with no limit (handle large catalogs)
-      // Supabase default is 1000, so we need to paginate for larger stores
       let allProducts: Product[] = [];
-      let page = 0;
-      const pageSize = 1000;
+      let pg = 0;
+      const pgSize = 1000;
 
       while (true) {
         const { data: products, error } = await supabase
           .from('products')
           .select('*')
           .order('title')
-          .range(page * pageSize, (page + 1) * pageSize - 1);
+          .range(pg * pgSize, (pg + 1) * pgSize - 1);
 
-        if (error) {
-          console.error('Products fetch error:', error);
-          break;
-        }
-
+        if (error) { console.error('Products fetch error:', error); break; }
         if (!products || products.length === 0) break;
         allProducts = [...allProducts, ...(products as Product[])];
-
-        if (products.length < pageSize) break; // Last page
-        page++;
-
-        if (page > 50) { // Safety limit: 50,000 products max
-          console.warn('Hit product pagination safety limit');
-          break;
-        }
+        if (products.length < pgSize) break;
+        pg++;
+        if (pg > 50) break;
       }
 
-      // Fetch all variants (also paginated)
       let allVariants: Variant[] = [];
-      page = 0;
-
+      pg = 0;
       while (true) {
         const { data: variants, error } = await supabase
           .from('variants')
           .select('*')
-          .range(page * pageSize, (page + 1) * pageSize - 1);
+          .range(pg * pgSize, (pg + 1) * pgSize - 1);
 
-        if (error) {
-          console.error('Variants fetch error:', error);
-          break;
-        }
-
+        if (error) { console.error('Variants fetch error:', error); break; }
         if (!variants || variants.length === 0) break;
         allVariants = [...allVariants, ...(variants as Variant[])];
-
-        if (variants.length < pageSize) break;
-        page++;
-
-        if (page > 50) {
-          console.warn('Hit variant pagination safety limit');
-          break;
-        }
+        if (variants.length < pgSize) break;
+        pg++;
+        if (pg > 50) break;
       }
 
-      // Fetch all analyses (also paginated)
       let allAnalyses: Analysis[] = [];
-      page = 0;
-
+      pg = 0;
       while (true) {
         const { data: analyses, error } = await supabase
           .from('analyses')
           .select('*')
-          .range(page * pageSize, (page + 1) * pageSize - 1);
+          .range(pg * pgSize, (pg + 1) * pgSize - 1);
 
-        if (error) {
-          console.error('Analyses fetch error:', error);
-          break;
-        }
-
+        if (error) { console.error('Analyses fetch error:', error); break; }
         if (!analyses || analyses.length === 0) break;
         allAnalyses = [...allAnalyses, ...(analyses as Analysis[])];
-
-        if (analyses.length < pageSize) break;
-        page++;
-
-        if (page > 50) break;
+        if (analyses.length < pgSize) break;
+        pg++;
+        if (pg > 50) break;
       }
-
-      console.log(`Loaded ${allProducts.length} products, ${allVariants.length} variants, ${allAnalyses.length} analyses`);
 
       const productMap = new Map(allProducts.map(p => [p.id, p]));
       const analysisMap = new Map(allAnalyses.map(a => [a.variant_id, a]));
@@ -169,7 +180,7 @@ export default function ProductsContent() {
         ...(v as Variant),
         product: productMap.get(v.product_id) as Product,
         analysis: analysisMap.get(v.id) || null,
-      })).filter(v => v.product); // filter out orphans
+      })).filter(v => v.product);
 
       setRows(variantRows);
     } catch (e) {
@@ -242,12 +253,12 @@ export default function ProductsContent() {
 
     setFiltered(result);
     setPage(1);
-  }, [rows, search, statusFilter, productStatusFilter, vendorFilter, sortBy]);
+  }, [rows, search, statusFilter, productStatusFilter, vendorFilter, sortBy, settings.min_margin]);
 
   const totalPages = Math.ceil(filtered.length / pageSize);
   const pageRows = filtered.slice((page - 1) * pageSize, page * pageSize);
 
-  // Analyze a single variant (silent mode used during bulk analysis)
+  // Analyze a single variant
   async function analyzeVariant(productId: string, variantId: string, opts?: { silent?: boolean }): Promise<boolean> {
     const key = `${productId}:${variantId}`;
     setAnalyzing(prev => new Set(prev).add(key));
@@ -301,93 +312,165 @@ export default function ProductsContent() {
     }
   }
 
-  // Robust bulk analysis with progress tracking, concurrency control, and cancellation
-  async function runBulkAnalysis(items: VariantRow[]) {
-    if (bulkProgress) return; // Already running
-    cancelBulkRef.current = false;
+  // ========================================================================
+  // PERSISTENT BATCH SYSTEM
+  // ========================================================================
 
-    const concurrency = Math.min(Math.max(settings.concurrency || 3, 1), 10); // 1-10 concurrent
+  // Create a new batch job
+  async function createBatch(items: VariantRow[]) {
+    if (batchProcessing || activeBatch?.status === 'running') return;
 
-    setBulkProgress({
-      total: items.length,
-      completed: 0,
-      failed: 0,
-      currentItems: [],
-      startedAt: Date.now(),
-    });
+    const variantIds = items.map(r => ({ productId: r.product_id, variantId: r.id }));
 
-    let completed = 0;
-    let failed = 0;
-
-    for (let i = 0; i < items.length; i += concurrency) {
-      if (cancelBulkRef.current) break;
-
-      const batch = items.slice(i, i + concurrency);
-      const batchNames = batch.map(r =>
-        r.product.title.length > 35 ? r.product.title.slice(0, 35) + '...' : r.product.title
-      );
-
-      setBulkProgress(prev => prev ? {
-        ...prev,
-        completed,
-        failed,
-        currentItems: batchNames,
-      } : null);
-
-      const results = await Promise.allSettled(
-        batch.map(r => analyzeVariant(r.product_id, r.id, { silent: true }))
-      );
-
-      for (const result of results) {
-        if (result.status === 'fulfilled' && result.value) completed++;
-        else failed++;
+    try {
+      const res = await fetch('/api/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          variantIds,
+          chunkSize: batchChunkSize,
+          autoApply: batchAutoApply,
+          aiUnrestricted: batchAiUnrestricted,
+          name: `Batch: ${items.length} variants`,
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.batch) {
+        setActiveBatch(data.batch);
+        setShowBatchConfig(false);
+        showToast(`Batch created: ${items.length} variants`, 'success');
+        // Start processing
+        resumeBatchProcessing(data.batch.id);
+      } else {
+        showToast(`Failed to create batch: ${data.error}`, 'error');
       }
+    } catch {
+      showToast('Failed to create batch: network error', 'error');
+    }
+  }
 
-      // Reload data periodically to update the table (every ~25 items)
-      if ((completed + failed) % 25 < concurrency) {
+  // Resume processing a batch (called on page load if batch exists, or after creation)
+  async function resumeBatchProcessing(batchId: string) {
+    if (batchProcessing) return;
+    setBatchProcessing(true);
+    cancelBatchRef.current = false;
+
+    try {
+      while (!cancelBatchRef.current) {
+        const res = await fetch('/api/batch/process', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ batchId }),
+        });
+        const data = await res.json();
+
+        if (!data.success) {
+          console.error('Batch process error:', data.error);
+          // Wait and retry
+          await new Promise(r => setTimeout(r, 3000));
+          continue;
+        }
+
+        // Update batch state
+        if (data.batch) {
+          setActiveBatch(data.batch);
+        }
+
+        // Check if done
+        if (data.done) {
+          showToast(
+            data.reason === 'cancelled'
+              ? 'Batch cancelled. Progress saved.'
+              : `Batch complete! ${data.batch?.completed || 0} analyzed${data.batch?.autoApply ? `, ${data.batch?.applied || 0} applied` : ''}`,
+            data.reason === 'cancelled' ? 'warning' : 'success'
+          );
+          // Reload data to show results
+          loadData();
+          break;
+        }
+
+        // Reload data periodically to update table
         loadData();
+
+        // Small delay between chunks to not hammer the server
+        await new Promise(r => setTimeout(r, 1000));
       }
-    }
-
-    // Final reload
-    await loadData();
-    setBulkProgress(null);
-
-    if (cancelBulkRef.current) {
-      showToast(`Cancelled. ${completed} completed, ${failed} failed out of ${items.length}.`, 'warning');
-    } else {
-      showToast(`Complete! ${completed} analyzed, ${failed} failed out of ${items.length}.`, completed > 0 ? 'success' : 'error');
+    } catch (e) {
+      console.error('Batch processing error:', e);
+      showToast('Batch processing interrupted. Refresh to resume.', 'warning');
+    } finally {
+      setBatchProcessing(false);
     }
   }
 
-  // Bulk analyze selected
-  function analyzeSelected() {
-    const selectedRows = rows.filter(r => selected.has(r.id));
-    if (selectedRows.length === 0) return;
-    runBulkAnalysis(selectedRows);
+  // Cancel active batch
+  async function cancelBatch() {
+    if (!activeBatch) return;
+    cancelBatchRef.current = true;
+
+    try {
+      await fetch('/api/batch/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batchId: activeBatch.id }),
+      });
+      setActiveBatch(prev => prev ? { ...prev, status: 'cancelled' } : null);
+      showToast('Batch cancelled. Progress saved.', 'warning');
+      loadData();
+    } catch {
+      showToast('Failed to cancel batch', 'error');
+    }
   }
 
-  // Bulk accept all selected with suggestions
-  async function acceptAllSelected() {
-    const selectedWithSuggestions = rows.filter(r =>
-      selected.has(r.id) && r.analysis?.suggested_price && !r.analysis.applied && !r.analysis.error
-    );
-    let success = 0;
-    for (const r of selectedWithSuggestions) {
-      if (r.analysis) {
-        try {
-          await acceptSuggestion(r.analysis.id);
-          success++;
-        } catch { /* continue */ }
+  // Apply all results from a completed batch
+  async function applyBatchResults() {
+    if (!activeBatch || applying) return;
+    setApplying(true);
+
+    try {
+      const res = await fetch('/api/batch/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batchId: activeBatch.id }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast(`Applied ${data.applied} prices to Shopify${data.failed > 0 ? ` (${data.failed} failed)` : ''}`, 'success');
+        setActiveBatch(prev => prev ? { ...prev, applied: (prev.applied || 0) + data.applied } : null);
+        loadData();
+      } else {
+        showToast(`Apply failed: ${data.error}`, 'error');
       }
+    } catch {
+      showToast('Apply failed: network error', 'error');
+    } finally {
+      setApplying(false);
     }
-    showToast(`Applied ${success} price updates`, 'success');
   }
 
-  // Analyze all visible
-  function analyzeAllVisible() {
-    if (filtered.length === 0) return;
-    runBulkAnalysis(filtered);
+  // Dismiss completed/cancelled batch
+  function dismissBatch() {
+    setActiveBatch(null);
+  }
+
+  // Select all filtered variants
+  function selectAllFiltered() {
+    setSelected(new Set(filtered.map(r => r.id)));
+  }
+
+  // Open batch config for selected items
+  function openBatchConfig() {
+    if (selected.size === 0 && filtered.length === 0) return;
+    setShowBatchConfig(true);
+  }
+
+  // Start batch for selected or all filtered
+  function startBatch(useSelected: boolean) {
+    const items = useSelected
+      ? rows.filter(r => selected.has(r.id))
+      : filtered;
+    if (items.length === 0) return;
+    createBatch(items);
   }
 
   // CSV export
@@ -426,53 +509,236 @@ export default function ProductsContent() {
     return r?.analysis?.suggested_price && !r.analysis.applied;
   });
 
+  const batchDone = activeBatch && (activeBatch.status === 'completed' || activeBatch.status === 'cancelled');
+  const batchActive = activeBatch && (activeBatch.status === 'running' || activeBatch.status === 'pending');
+  const batchProgress = activeBatch ? ((activeBatch.completed + activeBatch.failed) / Math.max(activeBatch.totalVariants, 1)) * 100 : 0;
+
   return (
     <>
-      {/* Bulk Analysis Progress Bar */}
-      {bulkProgress && (
-        <div className="bg-gray-900 border-b border-blue-500/50 shadow-lg shadow-blue-500/10 animate-slide-down">
+      {/* ================================================================ */}
+      {/* PERSISTENT BATCH PROGRESS BAR - survives page refreshes */}
+      {/* ================================================================ */}
+      {activeBatch && (
+        <div className={`border-b shadow-lg ${
+          batchActive ? 'bg-gray-900 border-blue-500/50 shadow-blue-500/10' :
+          activeBatch.status === 'completed' ? 'bg-gray-900 border-green-500/50 shadow-green-500/10' :
+          'bg-gray-900 border-yellow-500/50 shadow-yellow-500/10'
+        }`}>
           {/* Progress bar track */}
           <div className="h-1.5 bg-gray-800 relative overflow-hidden">
             <div
-              className="h-full bg-gradient-to-r from-blue-600 to-blue-400 transition-all duration-500 ease-out relative progress-bar-shimmer"
-              style={{ width: `${Math.max(1, (bulkProgress.completed + bulkProgress.failed) / bulkProgress.total * 100)}%` }}
+              className={`h-full transition-all duration-500 ease-out relative ${
+                batchActive ? 'bg-gradient-to-r from-blue-600 to-blue-400 progress-bar-shimmer' :
+                activeBatch.status === 'completed' ? 'bg-gradient-to-r from-green-600 to-green-400' :
+                'bg-gradient-to-r from-yellow-600 to-yellow-400'
+              }`}
+              style={{ width: `${Math.max(1, batchProgress)}%` }}
             />
           </div>
-          <div className="px-6 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className="relative">
-                <div className="animate-spin w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full" />
-                <div className="absolute inset-0 animate-ping w-6 h-6 border border-blue-400/30 rounded-full" />
-              </div>
-              <div>
-                <div className="font-medium text-sm flex items-center gap-3">
-                  <span>Analyzing {bulkProgress.completed + bulkProgress.failed} / {bulkProgress.total} variants</span>
-                  <span className="text-xs text-gray-500">
-                    ({Math.round((bulkProgress.completed + bulkProgress.failed) / bulkProgress.total * 100)}%)
-                  </span>
-                </div>
-                <div className="text-xs text-gray-400 mt-0.5 flex items-center gap-3">
-                  <span className="text-green-400">{bulkProgress.completed} completed</span>
-                  {bulkProgress.failed > 0 && <span className="text-red-400">{bulkProgress.failed} failed</span>}
-                  {bulkProgress.currentItems.length > 0 && (
-                    <span className="text-gray-500 truncate max-w-md">
-                      Now: {bulkProgress.currentItems.join(', ')}
+
+          <div className="px-6 py-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                {batchActive && (
+                  <div className="relative">
+                    <div className="animate-spin w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full" />
+                    <div className="absolute inset-0 animate-ping w-6 h-6 border border-blue-400/30 rounded-full" />
+                  </div>
+                )}
+                {activeBatch.status === 'completed' && (
+                  <div className="w-6 h-6 bg-green-500 rounded-full flex items-center justify-center">
+                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                )}
+                <div>
+                  <div className="font-medium text-sm flex items-center gap-3">
+                    <span>
+                      {batchActive ? 'Analyzing' : activeBatch.status === 'completed' ? 'Batch Complete' : 'Batch Cancelled'}
+                      {' '}{activeBatch.completed + activeBatch.failed} / {activeBatch.totalVariants} variants
                     </span>
-                  )}
+                    <span className="text-xs text-gray-500">({Math.round(batchProgress)}%)</span>
+                    {activeBatch.autoApply && (
+                      <span className="text-xs px-2 py-0.5 bg-purple-900/50 text-purple-300 rounded">Auto-Apply</span>
+                    )}
+                    {activeBatch.aiUnrestricted && (
+                      <span className="text-xs px-2 py-0.5 bg-orange-900/50 text-orange-300 rounded">AI Unlimited</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-gray-400 mt-0.5 flex items-center gap-3">
+                    <span className="text-green-400">{activeBatch.completed} completed</span>
+                    {activeBatch.failed > 0 && <span className="text-red-400">{activeBatch.failed} failed</span>}
+                    {activeBatch.applied > 0 && <span className="text-purple-400">{activeBatch.applied} applied</span>}
+                    <span className="text-gray-500">Chunk size: {activeBatch.chunkSize}</span>
+                  </div>
                 </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {/* Apply button for completed non-auto-apply batches */}
+                {batchDone && !activeBatch.autoApply && activeBatch.completed > 0 && (
+                  <button
+                    onClick={applyBatchResults}
+                    disabled={applying}
+                    className="px-4 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 rounded text-sm font-medium transition-colors flex items-center gap-2"
+                  >
+                    {applying ? (
+                      <>
+                        <div className="animate-spin w-3 h-3 border-2 border-white border-t-transparent rounded-full" />
+                        Applying...
+                      </>
+                    ) : (
+                      <>Apply All Suggestions</>
+                    )}
+                  </button>
+                )}
+
+                {/* Cancel button for active batches */}
+                {batchActive && (
+                  <button
+                    onClick={cancelBatch}
+                    className="px-4 py-1.5 bg-red-600/80 hover:bg-red-600 rounded text-sm font-medium transition-colors"
+                  >
+                    Cancel
+                  </button>
+                )}
+
+                {/* Dismiss button for finished batches */}
+                {batchDone && (
+                  <button
+                    onClick={dismissBatch}
+                    className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+                  >
+                    Dismiss
+                  </button>
+                )}
               </div>
             </div>
-            <button
-              onClick={() => { cancelBulkRef.current = true; }}
-              className="px-4 py-1.5 bg-red-600/80 hover:bg-red-600 rounded text-sm font-medium transition-colors"
-            >
-              Cancel
-            </button>
+
+            {/* Show last error if any */}
+            {activeBatch.lastError && batchActive && (
+              <div className="mt-2 text-xs text-yellow-400/70 truncate">
+                Last issue: {activeBatch.lastError}
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* Filter Bar */}
+      {/* ================================================================ */}
+      {/* BATCH CONFIGURATION MODAL */}
+      {/* ================================================================ */}
+      {showBatchConfig && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowBatchConfig(false)}>
+          <div className="bg-gray-800 border border-gray-700 rounded-xl shadow-2xl w-full max-w-lg" onClick={e => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-gray-700">
+              <h3 className="text-lg font-semibold">Batch Analysis Configuration</h3>
+              <p className="text-sm text-gray-400 mt-1">
+                {selectedCount > 0 ? `${selectedCount} selected variants` : `${filtered.length} filtered variants`}
+              </p>
+            </div>
+
+            <div className="p-6 space-y-5">
+              {/* Chunk size */}
+              <div>
+                <div className="flex justify-between text-sm mb-1">
+                  <label className="text-gray-300 font-medium">Chunk Size</label>
+                  <span className="text-gray-400">{batchChunkSize} variants per batch</span>
+                </div>
+                <input
+                  type="range" min={10} max={200} step={10} value={batchChunkSize}
+                  onChange={e => setBatchChunkSize(Number(e.target.value))}
+                  className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Work is saved after each chunk completes. Smaller chunks = more frequent saves.
+                </p>
+              </div>
+
+              {/* AI Unlimited Mode */}
+              <label className="flex items-start gap-3 p-3 bg-gray-700/50 rounded-lg cursor-pointer hover:bg-gray-700/70 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={batchAiUnrestricted}
+                  onChange={e => setBatchAiUnrestricted(e.target.checked)}
+                  className="mt-0.5 rounded bg-gray-600 border-gray-500"
+                />
+                <div>
+                  <div className="text-sm font-medium text-orange-300">AI Unlimited Mode</div>
+                  <div className="text-xs text-gray-400 mt-0.5">
+                    AI decides optimal price without margin floors, MSRP limits, or price change caps.
+                    Best expert recommendation with no guardrails.
+                  </div>
+                </div>
+              </label>
+
+              {/* Auto Apply */}
+              <label className="flex items-start gap-3 p-3 bg-gray-700/50 rounded-lg cursor-pointer hover:bg-gray-700/70 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={batchAutoApply}
+                  onChange={e => setBatchAutoApply(e.target.checked)}
+                  className="mt-0.5 rounded bg-gray-600 border-gray-500"
+                />
+                <div>
+                  <div className="text-sm font-medium text-purple-300">Auto-Apply to Shopify</div>
+                  <div className="text-xs text-gray-400 mt-0.5">
+                    Automatically update prices on Shopify as each analysis completes.
+                    No manual review needed &mdash; the AI decides and applies.
+                  </div>
+                </div>
+              </label>
+
+              {/* Warning for auto-apply + unrestricted */}
+              {batchAutoApply && batchAiUnrestricted && (
+                <div className="p-3 bg-red-900/30 border border-red-700/50 rounded-lg">
+                  <div className="text-sm font-medium text-red-300">Full Autopilot Mode</div>
+                  <div className="text-xs text-gray-300 mt-1">
+                    The AI will analyze every product, determine the best price with no constraints,
+                    and immediately update Shopify. You can cancel at any time and all progress is saved.
+                  </div>
+                </div>
+              )}
+
+              {/* Summary */}
+              <div className="p-3 bg-gray-700/30 rounded-lg text-sm text-gray-300">
+                <div className="font-medium mb-1">Summary</div>
+                <ul className="text-xs space-y-1 text-gray-400">
+                  <li>{selectedCount > 0 ? selectedCount : filtered.length} variants will be analyzed</li>
+                  <li>Processed in chunks of {batchChunkSize} (saved after each chunk)</li>
+                  <li>{Math.ceil((selectedCount > 0 ? selectedCount : filtered.length) / batchChunkSize)} total chunks</li>
+                  {batchAiUnrestricted && <li className="text-orange-400">AI decides all prices (no guardrails)</li>}
+                  {batchAutoApply && <li className="text-purple-400">Prices auto-applied to Shopify</li>}
+                  {!batchAutoApply && <li>You will review and apply prices after completion</li>}
+                </ul>
+              </div>
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-700 flex justify-end gap-3">
+              <button
+                onClick={() => setShowBatchConfig(false)}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => startBatch(selectedCount > 0)}
+                className="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm font-medium flex items-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                Start Batch Analysis
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================================================================ */}
+      {/* FILTER BAR */}
+      {/* ================================================================ */}
       <div className="bg-gray-800 border-b border-gray-700 p-4 flex items-center gap-4 flex-wrap">
         <input
           type="text"
@@ -513,30 +779,29 @@ export default function ProductsContent() {
           <option value="margin-asc">Margin: Low-High</option>
           <option value="margin-desc">Margin: High-Low</option>
         </select>
-        <button onClick={analyzeAllVisible} disabled={!!bulkProgress}
-          className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded text-sm flex items-center gap-2">
-          {bulkProgress ? (
-            <>
-              <div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
-              {bulkProgress.completed + bulkProgress.failed}/{bulkProgress.total}
-            </>
-          ) : (
-            <>
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-              </svg>
-              Analyze All Visible ({filtered.length})
-            </>
-          )}
+
+        {/* Batch analyze button */}
+        <button
+          onClick={openBatchConfig}
+          disabled={!!batchActive}
+          className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded text-sm flex items-center gap-2"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+          </svg>
+          {selectedCount > 0 ? `Batch Analyze (${selectedCount})` : `Batch Analyze All (${filtered.length})`}
         </button>
+
         <button onClick={exportCSV}
           className="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm">
           Export CSV
         </button>
       </div>
 
-      {/* Product Table */}
+      {/* ================================================================ */}
+      {/* PRODUCT TABLE */}
+      {/* ================================================================ */}
       <div className="flex-1 overflow-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-800 sticky top-0">
@@ -545,7 +810,7 @@ export default function ProductsContent() {
                 <input type="checkbox"
                   checked={selected.size === filtered.length && filtered.length > 0}
                   onChange={e => {
-                    if (e.target.checked) setSelected(new Set(filtered.map(r => r.id)));
+                    if (e.target.checked) selectAllFiltered();
                     else setSelected(new Set());
                   }}
                   className="rounded bg-gray-700 border-gray-600" />
@@ -685,16 +950,27 @@ export default function ProductsContent() {
       </div>
 
       {/* Bulk Action Bar */}
-      {selectedCount > 0 && (
+      {selectedCount > 0 && !batchActive && (
         <div className="bg-gray-800 border-t border-blue-500 px-4 py-3 flex items-center justify-between">
           <span className="text-sm font-medium">{selectedCount} variant{selectedCount > 1 ? 's' : ''} selected</span>
           <div className="flex items-center gap-3">
-            <button onClick={analyzeSelected} disabled={!!bulkProgress}
-              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-2 rounded text-sm">
-              {bulkProgress ? 'Analysis Running...' : 'Analyze Selected'}
+            <button onClick={openBatchConfig}
+              className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm font-medium">
+              Batch Analyze Selected
             </button>
             {hasSelectedSuggestions && (
-              <button onClick={acceptAllSelected} className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded text-sm">
+              <button onClick={async () => {
+                const selectedWithSuggestions = rows.filter(r =>
+                  selected.has(r.id) && r.analysis?.suggested_price && !r.analysis.applied && !r.analysis.error
+                );
+                let success = 0;
+                for (const r of selectedWithSuggestions) {
+                  if (r.analysis) {
+                    try { await acceptSuggestion(r.analysis.id); success++; } catch { /* continue */ }
+                  }
+                }
+                showToast(`Applied ${success} price updates`, 'success');
+              }} className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded text-sm">
                 Accept All Suggestions
               </button>
             )}
