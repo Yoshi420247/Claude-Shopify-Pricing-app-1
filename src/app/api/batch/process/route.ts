@@ -1,6 +1,6 @@
 // Process the next chunk of a batch job with CONCURRENT analysis
-// Called repeatedly by the client to process one chunk at a time
-// Each chunk: analyze N variants concurrently (default 3), save results, optionally auto-apply
+// Called repeatedly by the client to process a small batch at a time
+// Each call: analyze a few variants concurrently, save results, optionally auto-apply
 // All progress is persisted to DB so it survives page refreshes
 // Rate limiting is handled by the individual API clients (openai, brave, shopify)
 
@@ -11,7 +11,27 @@ import { updateVariantPrice } from '@/lib/shopify';
 import type { Product, Variant, Settings } from '@/types';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 300; // 5 minutes per chunk
+export const maxDuration = 300; // 5 minutes per call
+
+// CRITICAL: Max items per API call must fit within the 300s Vercel timeout.
+// Each analysis takes 30-90s (mostly Brave rate limiting).
+// With concurrency=3 and MAX_PER_CALL=6, worst case = 2 waves × 90s = 180s < 300s.
+const MAX_PER_CALL = 6;
+
+// Fatal errors that should stop the entire batch (not just skip one item)
+const FATAL_ERROR_PATTERNS = [
+  'exceeded your current quota',
+  'insufficient_quota',
+  'billing',
+  'account deactivated',
+  'invalid_api_key',
+  'Incorrect API key',
+];
+
+function isFatalError(error: string): boolean {
+  const lower = error.toLowerCase();
+  return FATAL_ERROR_PATTERNS.some(p => lower.includes(p.toLowerCase()));
+}
 
 interface VariantRef {
   productId: string;
@@ -108,7 +128,6 @@ async function processOneVariant(
 async function runWithConcurrency<T>(
   tasks: (() => Promise<T>)[],
   limit: number,
-  onItemDone?: (result: T, index: number) => void,
 ): Promise<T[]> {
   const results: T[] = new Array(tasks.length);
   let nextIndex = 0;
@@ -119,14 +138,11 @@ async function runWithConcurrency<T>(
       try {
         results[idx] = await tasks[idx]();
       } catch (e) {
-        // Should not happen since tasks handle their own errors, but just in case
         results[idx] = { error: e instanceof Error ? e.message : 'Worker error' } as T;
       }
-      onItemDone?.(results[idx], idx);
     }
   }
 
-  // Launch `limit` workers that pull from the task queue
   const workers = Array.from({ length: Math.min(limit, tasks.length) }, () => worker());
   await Promise.all(workers);
 
@@ -186,16 +202,19 @@ export async function POST(req: NextRequest) {
       product_niche: 'smoke shop, heady glass, dab tools',
     };
 
-    // Override AI unrestricted from batch settings
     if (batch.ai_unrestricted) {
       settings.ai_unrestricted = true;
     }
 
-    // Calculate which variants to process in this chunk
+    // Calculate which variants to process in this call
     const allVariants: VariantRef[] = batch.variant_ids || [];
     const processed = (batch.completed || 0) + (batch.failed || 0);
-    const chunkSize = batch.chunk_size || 50;
-    const chunk = allVariants.slice(processed, processed + chunkSize);
+
+    // CRITICAL: Only take a small number of items per API call to stay within 300s timeout.
+    // The client loops calling this endpoint, so small batches are fine.
+    const concurrency = Math.min(Math.max(settings.concurrency || 3, 1), 10);
+    const itemsThisCall = Math.min(MAX_PER_CALL, concurrency * 2);
+    const chunk = allVariants.slice(processed, processed + itemsThisCall);
 
     if (chunk.length === 0) {
       // All done
@@ -219,7 +238,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Load all products and variants needed for this chunk
+    // Load products and variants needed for this small batch
     const productIds = [...new Set(chunk.map(v => v.productId))];
     const variantIds = chunk.map(v => v.variantId);
 
@@ -231,44 +250,41 @@ export async function POST(req: NextRequest) {
     const productMap = new Map((products || []).map(p => [p.id, p as Product]));
     const variantMap = new Map((variants || []).map(v => [v.id, v as Variant]));
 
-    // Concurrency: use settings.concurrency (1-10, default 3)
-    // Brave is the bottleneck at 0.5 req/sec (15/min) — rate limiter queues naturally
-    // OpenAI at 5 req/sec handles 3-5 concurrent streams easily
-    // Higher concurrency = more overlap between slow Brave waits and OpenAI calls
-    const concurrency = Math.min(Math.max(settings.concurrency || 3, 1), 10);
-
     let chunkCompleted = 0;
     let chunkFailed = 0;
     let chunkApplied = 0;
     const chunkResults: ChunkResult[] = [];
-    let cancelled = false;
+    let fatalError: string | null = null;
 
-    // Check for cancellation periodically (every 5 completed items, not every item)
-    let itemsSinceCheck = 0;
-    const CANCEL_CHECK_INTERVAL = 5;
-
-    // Build task array for concurrent execution
+    // Build tasks for concurrent execution
     const tasks = chunk.map((ref) => async () => {
-      // Check cancellation before starting a new analysis
-      if (cancelled) {
+      // If a fatal error was detected (e.g. OpenAI quota), skip remaining
+      if (fatalError) {
         return {
-          result: { variantId: ref.variantId, status: 'failed' as const, error: 'Batch cancelled' },
+          result: { variantId: ref.variantId, status: 'failed' as const, error: `Skipped: ${fatalError}` },
           completed: false,
           applied: false,
         };
       }
-
       return processOneVariant(ref, productMap, variantMap, settings, batch.auto_apply, db);
     });
 
-    // Process chunk with concurrency limit
-    const outcomes = await runWithConcurrency(tasks, concurrency, (outcome, _idx) => {
-      if (!outcome || cancelled) return;
+    // Process with concurrency limit
+    const outcomes = await runWithConcurrency(tasks, concurrency);
 
+    // Collect results and check for fatal errors
+    for (const outcome of outcomes) {
+      if (!outcome) continue;
       const { result, completed, applied } = outcome;
       chunkResults.push(result);
 
-      if (result.status === 'failed' && result.error !== 'Batch cancelled') {
+      if (result.status === 'failed' && result.error && !result.error.startsWith('Skipped:')) {
+        chunkFailed++;
+        // Check if this is a fatal error that should stop the batch
+        if (isFatalError(result.error)) {
+          fatalError = result.error;
+        }
+      } else if (result.error?.startsWith('Skipped:')) {
         chunkFailed++;
       } else if (completed) {
         chunkCompleted++;
@@ -276,66 +292,17 @@ export async function POST(req: NextRequest) {
       if (applied) {
         chunkApplied++;
       }
-
-      itemsSinceCheck++;
-
-      // Periodically update progress in DB (crash-safe) and check cancellation
-      if (itemsSinceCheck >= CANCEL_CHECK_INTERVAL) {
-        itemsSinceCheck = 0;
-
-        // Fire-and-forget progress update (don't await to avoid blocking concurrent work)
-        void (async () => {
-          try {
-            await db.from('batch_jobs')
-              .update({
-                completed: (batch.completed || 0) + chunkCompleted,
-                failed: (batch.failed || 0) + chunkFailed,
-                applied: (batch.applied || 0) + chunkApplied,
-                current_chunk: (batch.current_chunk || 0) + 1,
-                last_error: result.error || batch.last_error,
-              })
-              .eq('id', batchId);
-
-            // Also check cancellation
-            const { data: statusCheck } = await db
-              .from('batch_jobs')
-              .select('status')
-              .eq('id', batchId)
-              .single();
-
-            if (statusCheck?.status === 'cancelled') {
-              cancelled = true;
-            }
-          } catch {
-            /* ignore progress update failures */
-          }
-        })();
-      }
-    });
-
-    // Ensure we captured any results from the last few items
-    // (the onItemDone callback above may have missed some due to concurrency timing)
-    for (const outcome of outcomes) {
-      if (outcome && !chunkResults.some(r => r.variantId === outcome.result.variantId)) {
-        const { result, completed, applied } = outcome;
-        chunkResults.push(result);
-        if (result.status === 'failed' && result.error !== 'Batch cancelled') {
-          chunkFailed++;
-        } else if (completed) {
-          chunkCompleted++;
-        }
-        if (applied) {
-          chunkApplied++;
-        }
-      }
     }
 
-    // Final update for this chunk
+    // Update batch progress in DB
     const newCompleted = (batch.completed || 0) + chunkCompleted;
     const newFailed = (batch.failed || 0) + chunkFailed;
     const newApplied = (batch.applied || 0) + chunkApplied;
     const totalProcessed = newCompleted + newFailed;
     const isDone = totalProcessed >= batch.total_variants;
+
+    // If fatal error, pause the batch so it doesn't keep failing
+    const newStatus = fatalError ? 'paused' : isDone ? 'completed' : 'running';
 
     await db
       .from('batch_jobs')
@@ -344,8 +311,9 @@ export async function POST(req: NextRequest) {
         failed: newFailed,
         applied: newApplied,
         current_chunk: (batch.current_chunk || 0) + 1,
-        status: isDone ? 'completed' : 'running',
+        status: newStatus,
         completed_at: isDone ? new Date().toISOString() : null,
+        last_error: fatalError || chunkResults.find(r => r.error)?.error || batch.last_error,
       })
       .eq('id', batchId);
 
@@ -356,13 +324,22 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    if (fatalError) {
+      await db.from('activity_log').insert({
+        message: `Batch paused: ${fatalError}`,
+        type: 'error',
+      });
+    }
+
     // Reload batch for response
     const { data: updatedBatch } = await db.from('batch_jobs').select('*').eq('id', batchId).single();
 
     return NextResponse.json({
       success: true,
-      done: isDone,
+      done: isDone || !!fatalError,
+      fatalError: fatalError || undefined,
       concurrency,
+      itemsProcessed: chunk.length,
       chunkResults,
       chunkCompleted,
       chunkFailed,

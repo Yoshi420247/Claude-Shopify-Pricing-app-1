@@ -70,7 +70,7 @@ export default function ProductsContent() {
   const [showBatchConfig, setShowBatchConfig] = useState(false);
   const [batchAutoApply, setBatchAutoApply] = useState(false);
   const [batchAiUnrestricted, setBatchAiUnrestricted] = useState(false);
-  const [batchChunkSize, setBatchChunkSize] = useState(50);
+  const [batchChunkSize, setBatchChunkSize] = useState(25);
 
   const vendors = [...new Set(rows.map(r => r.product.vendor).filter(Boolean))] as string[];
 
@@ -355,36 +355,83 @@ export default function ProductsContent() {
     setBatchProcessing(true);
     cancelBatchRef.current = false;
 
+    let consecutiveErrors = 0;
+    const MAX_CONSECUTIVE_ERRORS = 5;
+
     try {
       while (!cancelBatchRef.current) {
-        const res = await fetch('/api/batch/process', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ batchId }),
-        });
-        const data = await res.json();
+        let data: Record<string, unknown> | null = null;
 
-        if (!data.success) {
-          console.error('Batch process error:', data.error);
-          // Wait and retry
+        try {
+          const res = await fetch('/api/batch/process', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ batchId }),
+          });
+
+          // Handle non-JSON responses (504 timeout returns HTML)
+          const contentType = res.headers.get('content-type') || '';
+          if (!contentType.includes('application/json')) {
+            console.error(`Batch process returned ${res.status} (non-JSON)`);
+            consecutiveErrors++;
+            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+              showToast(`Batch processing stopped after ${MAX_CONSECUTIVE_ERRORS} consecutive errors (last: HTTP ${res.status}). Refresh to resume.`, 'error');
+              break;
+            }
+            // Exponential backoff: 3s, 6s, 12s, 24s, 48s
+            const backoff = Math.min(3000 * Math.pow(2, consecutiveErrors - 1), 60000);
+            await new Promise(r => setTimeout(r, backoff));
+            continue;
+          }
+
+          data = await res.json();
+        } catch (networkErr) {
+          console.error('Batch process network error:', networkErr);
+          consecutiveErrors++;
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            showToast('Batch processing stopped: too many network errors. Refresh to resume.', 'error');
+            break;
+          }
+          const backoff = Math.min(3000 * Math.pow(2, consecutiveErrors - 1), 60000);
+          await new Promise(r => setTimeout(r, backoff));
+          continue;
+        }
+
+        if (!data || !data.success) {
+          console.error('Batch process error:', data?.error);
+          consecutiveErrors++;
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            showToast(`Batch stopped: ${data?.error || 'Unknown error'}. Refresh to resume.`, 'error');
+            break;
+          }
           await new Promise(r => setTimeout(r, 3000));
           continue;
         }
 
+        // Successful response — reset error counter
+        consecutiveErrors = 0;
+
         // Update batch state
         if (data.batch) {
-          setActiveBatch(data.batch);
+          setActiveBatch(data.batch as BatchJob);
+        }
+
+        // Check for fatal errors (e.g. OpenAI quota exceeded)
+        if (data.fatalError) {
+          showToast(`Batch paused: ${data.fatalError}`, 'error');
+          loadData();
+          break;
         }
 
         // Check if done
         if (data.done) {
+          const batch = data.batch as BatchJob | undefined;
           showToast(
             data.reason === 'cancelled'
               ? 'Batch cancelled. Progress saved.'
-              : `Batch complete! ${data.batch?.completed || 0} analyzed${data.batch?.autoApply ? `, ${data.batch?.applied || 0} applied` : ''}`,
+              : `Batch complete! ${batch?.completed || 0} analyzed${batch?.autoApply ? `, ${batch?.applied || 0} applied` : ''}`,
             data.reason === 'cancelled' ? 'warning' : 'success'
           );
-          // Reload data to show results
           loadData();
           break;
         }
@@ -392,8 +439,8 @@ export default function ProductsContent() {
         // Reload data periodically to update table
         loadData();
 
-        // Small delay between chunks to not hammer the server
-        await new Promise(r => setTimeout(r, 1000));
+        // Small delay between calls
+        await new Promise(r => setTimeout(r, 500));
       }
     } catch (e) {
       console.error('Batch processing error:', e);
@@ -510,6 +557,7 @@ export default function ProductsContent() {
   });
 
   const batchDone = activeBatch && (activeBatch.status === 'completed' || activeBatch.status === 'cancelled');
+  const batchPaused = activeBatch && activeBatch.status === 'paused';
   const batchActive = activeBatch && (activeBatch.status === 'running' || activeBatch.status === 'pending');
   const batchProgress = activeBatch ? ((activeBatch.completed + activeBatch.failed) / Math.max(activeBatch.totalVariants, 1)) * 100 : 0;
 
@@ -521,6 +569,7 @@ export default function ProductsContent() {
       {activeBatch && (
         <div className={`border-b shadow-lg ${
           batchActive ? 'bg-gray-900 border-blue-500/50 shadow-blue-500/10' :
+          batchPaused ? 'bg-gray-900 border-red-500/50 shadow-red-500/10' :
           activeBatch.status === 'completed' ? 'bg-gray-900 border-green-500/50 shadow-green-500/10' :
           'bg-gray-900 border-yellow-500/50 shadow-yellow-500/10'
         }`}>
@@ -529,6 +578,7 @@ export default function ProductsContent() {
             <div
               className={`h-full transition-all duration-500 ease-out relative ${
                 batchActive ? 'bg-gradient-to-r from-blue-600 to-blue-400 progress-bar-shimmer' :
+                batchPaused ? 'bg-gradient-to-r from-red-600 to-red-400' :
                 activeBatch.status === 'completed' ? 'bg-gradient-to-r from-green-600 to-green-400' :
                 'bg-gradient-to-r from-yellow-600 to-yellow-400'
               }`}
@@ -555,7 +605,7 @@ export default function ProductsContent() {
                 <div>
                   <div className="font-medium text-sm flex items-center gap-3">
                     <span>
-                      {batchActive ? 'Analyzing' : activeBatch.status === 'completed' ? 'Batch Complete' : 'Batch Cancelled'}
+                      {batchActive ? 'Analyzing' : batchPaused ? 'Batch Paused' : activeBatch.status === 'completed' ? 'Batch Complete' : 'Batch Cancelled'}
                       {' '}{activeBatch.completed + activeBatch.failed} / {activeBatch.totalVariants} variants
                     </span>
                     <span className="text-xs text-gray-500">({Math.round(batchProgress)}%)</span>
@@ -576,6 +626,21 @@ export default function ProductsContent() {
               </div>
 
               <div className="flex items-center gap-2">
+                {/* Resume button for paused batches (e.g. after OpenAI quota error) */}
+                {batchPaused && (
+                  <button
+                    onClick={() => resumeBatchProcessing(activeBatch.id)}
+                    disabled={batchProcessing}
+                    className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded text-sm font-medium transition-colors flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    Resume
+                  </button>
+                )}
+
                 {/* Apply button for completed non-auto-apply batches */}
                 {batchDone && !activeBatch.autoApply && activeBatch.completed > 0 && (
                   <button
@@ -594,8 +659,8 @@ export default function ProductsContent() {
                   </button>
                 )}
 
-                {/* Cancel button for active batches */}
-                {batchActive && (
+                {/* Cancel button for active or paused batches */}
+                {(batchActive || batchPaused) && (
                   <button
                     onClick={cancelBatch}
                     className="px-4 py-1.5 bg-red-600/80 hover:bg-red-600 rounded text-sm font-medium transition-colors"
@@ -605,7 +670,7 @@ export default function ProductsContent() {
                 )}
 
                 {/* Dismiss button for finished batches */}
-                {batchDone && (
+                {(batchDone || batchPaused) && (
                   <button
                     onClick={dismissBatch}
                     className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
@@ -617,9 +682,9 @@ export default function ProductsContent() {
             </div>
 
             {/* Show last error if any */}
-            {activeBatch.lastError && batchActive && (
-              <div className="mt-2 text-xs text-yellow-400/70 truncate">
-                Last issue: {activeBatch.lastError}
+            {activeBatch.lastError && (batchActive || batchPaused) && (
+              <div className={`mt-2 text-xs truncate ${batchPaused ? 'text-red-400' : 'text-yellow-400/70'}`}>
+                {batchPaused ? 'Error: ' : 'Last issue: '}{activeBatch.lastError}
               </div>
             )}
           </div>
@@ -783,7 +848,7 @@ export default function ProductsContent() {
         {/* Batch analyze button */}
         <button
           onClick={openBatchConfig}
-          disabled={!!batchActive}
+          disabled={!!batchActive || !!batchPaused}
           className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded text-sm flex items-center gap-2"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
