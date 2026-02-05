@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { useToast } from '@/components/Toast';
@@ -42,16 +42,32 @@ export default function ProductsContent() {
   const [modalVariant, setModalVariant] = useState<VariantRow | null>(null);
   const [settings, setSettings] = useState<Partial<Settings>>(defaultSettings);
 
+  // Bulk analysis progress tracking
+  const [bulkProgress, setBulkProgress] = useState<{
+    total: number;
+    completed: number;
+    failed: number;
+    currentItems: string[];
+    startedAt: number;
+  } | null>(null);
+  const cancelBulkRef = useRef(false);
+
   const vendors = [...new Set(rows.map(r => r.product.vendor).filter(Boolean))] as string[];
 
-  // Load settings
+  // Load settings (merge localStorage for ai_unrestricted)
   useEffect(() => {
     async function loadSettings() {
       try {
         const res = await fetch('/api/settings');
         const data = await res.json();
         if (data.success && data.settings) {
-          setSettings({ ...defaultSettings, ...data.settings });
+          const merged = { ...defaultSettings, ...data.settings };
+          // Always use localStorage for ai_unrestricted (DB column may not exist)
+          const storedUnrestricted = localStorage.getItem('ai_unrestricted');
+          if (storedUnrestricted !== null) {
+            merged.ai_unrestricted = storedUnrestricted === 'true';
+          }
+          setSettings(merged);
         }
       } catch (e) {
         console.error('Settings load error:', e);
@@ -231,8 +247,8 @@ export default function ProductsContent() {
   const totalPages = Math.ceil(filtered.length / pageSize);
   const pageRows = filtered.slice((page - 1) * pageSize, page * pageSize);
 
-  // Analyze a single variant
-  async function analyzeVariant(productId: string, variantId: string) {
+  // Analyze a single variant (silent mode used during bulk analysis)
+  async function analyzeVariant(productId: string, variantId: string, opts?: { silent?: boolean }): Promise<boolean> {
     const key = `${productId}:${variantId}`;
     setAnalyzing(prev => new Set(prev).add(key));
 
@@ -240,17 +256,22 @@ export default function ProductsContent() {
       const res = await fetch('/api/analysis/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId, variantId }),
+        body: JSON.stringify({ productId, variantId, ai_unrestricted: settings.ai_unrestricted }),
       });
       const data = await res.json();
       if (data.success) {
-        showToast('Analysis complete', 'success');
-        loadData(); // Reload to get updated analysis
+        if (!opts?.silent) {
+          showToast('Analysis complete', 'success');
+          loadData();
+        }
+        return true;
       } else {
-        showToast(`Analysis failed: ${data.error}`, 'error');
+        if (!opts?.silent) showToast(`Analysis failed: ${data.error}`, 'error');
+        return false;
       }
     } catch {
-      showToast('Analysis failed: network error', 'error');
+      if (!opts?.silent) showToast('Analysis failed: network error', 'error');
+      return false;
     } finally {
       setAnalyzing(prev => {
         const next = new Set(prev);
@@ -280,14 +301,70 @@ export default function ProductsContent() {
     }
   }
 
-  // Bulk analyze selected
-  async function analyzeSelected() {
-    const selectedRows = rows.filter(r => selected.has(r.id));
-    showToast(`Analyzing ${selectedRows.length} variants...`, 'info');
-    for (const r of selectedRows) {
-      await analyzeVariant(r.product_id, r.id);
+  // Robust bulk analysis with progress tracking, concurrency control, and cancellation
+  async function runBulkAnalysis(items: VariantRow[]) {
+    if (bulkProgress) return; // Already running
+    cancelBulkRef.current = false;
+
+    const concurrency = Math.min(Math.max(settings.concurrency || 3, 1), 5); // 1-5 concurrent
+
+    setBulkProgress({
+      total: items.length,
+      completed: 0,
+      failed: 0,
+      currentItems: [],
+      startedAt: Date.now(),
+    });
+
+    let completed = 0;
+    let failed = 0;
+
+    for (let i = 0; i < items.length; i += concurrency) {
+      if (cancelBulkRef.current) break;
+
+      const batch = items.slice(i, i + concurrency);
+      const batchNames = batch.map(r =>
+        r.product.title.length > 35 ? r.product.title.slice(0, 35) + '...' : r.product.title
+      );
+
+      setBulkProgress(prev => prev ? {
+        ...prev,
+        completed,
+        failed,
+        currentItems: batchNames,
+      } : null);
+
+      const results = await Promise.allSettled(
+        batch.map(r => analyzeVariant(r.product_id, r.id, { silent: true }))
+      );
+
+      for (const result of results) {
+        if (result.status === 'fulfilled' && result.value) completed++;
+        else failed++;
+      }
+
+      // Reload data periodically to update the table (every ~25 items)
+      if ((completed + failed) % 25 < concurrency) {
+        loadData();
+      }
     }
-    showToast('Bulk analysis complete', 'success');
+
+    // Final reload
+    await loadData();
+    setBulkProgress(null);
+
+    if (cancelBulkRef.current) {
+      showToast(`Cancelled. ${completed} completed, ${failed} failed out of ${items.length}.`, 'warning');
+    } else {
+      showToast(`Complete! ${completed} analyzed, ${failed} failed out of ${items.length}.`, completed > 0 ? 'success' : 'error');
+    }
+  }
+
+  // Bulk analyze selected
+  function analyzeSelected() {
+    const selectedRows = rows.filter(r => selected.has(r.id));
+    if (selectedRows.length === 0) return;
+    runBulkAnalysis(selectedRows);
   }
 
   // Bulk accept all selected with suggestions
@@ -308,14 +385,9 @@ export default function ProductsContent() {
   }
 
   // Analyze all visible
-  async function analyzeAllVisible() {
-    showToast(`Analyzing ${filtered.length} variants...`, 'info');
-    // Process in batches of 5 to avoid overwhelming the server
-    for (let i = 0; i < filtered.length; i += 5) {
-      const batch = filtered.slice(i, i + 5);
-      await Promise.all(batch.map(r => analyzeVariant(r.product_id, r.id)));
-    }
-    showToast('Bulk analysis complete', 'success');
+  function analyzeAllVisible() {
+    if (filtered.length === 0) return;
+    runBulkAnalysis(filtered);
   }
 
   // CSV export
@@ -356,6 +428,50 @@ export default function ProductsContent() {
 
   return (
     <>
+      {/* Bulk Analysis Progress Bar */}
+      {bulkProgress && (
+        <div className="bg-gray-900 border-b border-blue-500/50 shadow-lg shadow-blue-500/10 animate-slide-down">
+          {/* Progress bar track */}
+          <div className="h-1.5 bg-gray-800 relative overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-blue-600 to-blue-400 transition-all duration-500 ease-out relative progress-bar-shimmer"
+              style={{ width: `${Math.max(1, (bulkProgress.completed + bulkProgress.failed) / bulkProgress.total * 100)}%` }}
+            />
+          </div>
+          <div className="px-6 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="relative">
+                <div className="animate-spin w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full" />
+                <div className="absolute inset-0 animate-ping w-6 h-6 border border-blue-400/30 rounded-full" />
+              </div>
+              <div>
+                <div className="font-medium text-sm flex items-center gap-3">
+                  <span>Analyzing {bulkProgress.completed + bulkProgress.failed} / {bulkProgress.total} variants</span>
+                  <span className="text-xs text-gray-500">
+                    ({Math.round((bulkProgress.completed + bulkProgress.failed) / bulkProgress.total * 100)}%)
+                  </span>
+                </div>
+                <div className="text-xs text-gray-400 mt-0.5 flex items-center gap-3">
+                  <span className="text-green-400">{bulkProgress.completed} completed</span>
+                  {bulkProgress.failed > 0 && <span className="text-red-400">{bulkProgress.failed} failed</span>}
+                  {bulkProgress.currentItems.length > 0 && (
+                    <span className="text-gray-500 truncate max-w-md">
+                      Now: {bulkProgress.currentItems.join(', ')}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={() => { cancelBulkRef.current = true; }}
+              className="px-4 py-1.5 bg-red-600/80 hover:bg-red-600 rounded text-sm font-medium transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Filter Bar */}
       <div className="bg-gray-800 border-b border-gray-700 p-4 flex items-center gap-4 flex-wrap">
         <input
@@ -397,13 +513,22 @@ export default function ProductsContent() {
           <option value="margin-asc">Margin: Low-High</option>
           <option value="margin-desc">Margin: High-Low</option>
         </select>
-        <button onClick={analyzeAllVisible}
-          className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center gap-2">
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-              d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-          </svg>
-          Analyze All Visible
+        <button onClick={analyzeAllVisible} disabled={!!bulkProgress}
+          className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded text-sm flex items-center gap-2">
+          {bulkProgress ? (
+            <>
+              <div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
+              {bulkProgress.completed + bulkProgress.failed}/{bulkProgress.total}
+            </>
+          ) : (
+            <>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+              </svg>
+              Analyze All Visible ({filtered.length})
+            </>
+          )}
         </button>
         <button onClick={exportCSV}
           className="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm">
@@ -465,7 +590,7 @@ export default function ProductsContent() {
               const imageUrl = row.product.image_url?.replace(/\.([^.]+)$/, '_100x100.$1');
 
               return (
-                <tr key={row.id} className={`border-b border-gray-700 hover:bg-gray-800/50 ${selected.has(row.id) ? 'bg-blue-900/20' : ''}`}>
+                <tr key={row.id} className={`border-b border-gray-700 hover:bg-gray-800/50 transition-colors ${selected.has(row.id) ? 'bg-blue-900/20' : ''} ${isAnalyzing ? 'animate-analyzing' : ''}`}>
                   <td className="px-4 py-3">
                     <input type="checkbox" checked={selected.has(row.id)}
                       onChange={e => {
@@ -564,8 +689,9 @@ export default function ProductsContent() {
         <div className="bg-gray-800 border-t border-blue-500 px-4 py-3 flex items-center justify-between">
           <span className="text-sm font-medium">{selectedCount} variant{selectedCount > 1 ? 's' : ''} selected</span>
           <div className="flex items-center gap-3">
-            <button onClick={analyzeSelected} className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm">
-              Analyze Selected
+            <button onClick={analyzeSelected} disabled={!!bulkProgress}
+              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-2 rounded text-sm">
+              {bulkProgress ? 'Analysis Running...' : 'Analyze Selected'}
             </button>
             {hasSelectedSuggestions && (
               <button onClick={acceptAllSelected} className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded text-sm">
