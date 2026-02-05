@@ -1,8 +1,16 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useToast } from '@/components/Toast';
 import type { DashboardMetrics, ActivityLog } from '@/types';
+
+interface QueueStats {
+  pending: number;
+  processing: number;
+  completed: number;
+  failed: number;
+  byGroup: Array<{ group: string; count: number }>;
+}
 
 export default function DashboardPage() {
   const { showToast } = useToast();
@@ -10,10 +18,26 @@ export default function DashboardPage() {
   const [activity, setActivity] = useState<ActivityLog[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{ processed: number; total: number } | null>(null);
+
+  const loadQueueStats = useCallback(async () => {
+    try {
+      const res = await fetch('/api/analysis/worker');
+      const data = await res.json();
+      if (data.success) {
+        setQueueStats(data.stats);
+      }
+    } catch (e) {
+      console.error('Queue stats error:', e);
+    }
+  }, []);
 
   useEffect(() => {
     loadDashboard();
-  }, []);
+    loadQueueStats();
+  }, [loadQueueStats]);
 
   async function loadDashboard() {
     try {
@@ -47,6 +71,86 @@ export default function DashboardPage() {
     } finally {
       setSyncing(false);
     }
+  }
+
+  // Start batch analysis for all unanalyzed products
+  async function startBatchAnalysis() {
+    setBatchRunning(true);
+    setBatchProgress(null);
+    showToast('Creating analysis jobs...', 'info');
+
+    try {
+      // Create jobs for all unanalyzed products
+      const createRes = await fetch('/api/analysis/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          productIds: 'all',
+          skipExisting: true,
+          maxJobs: 1000,
+        }),
+      });
+      const createData = await createRes.json();
+
+      if (!createData.success) {
+        showToast(`Failed to create jobs: ${createData.error}`, 'error');
+        setBatchRunning(false);
+        return;
+      }
+
+      showToast(`Created ${createData.jobsCreated} analysis jobs (${createData.jobsSkipped} skipped)`, 'success');
+      setQueueStats(createData.queueStats);
+
+      if (createData.jobsCreated === 0) {
+        setBatchRunning(false);
+        return;
+      }
+
+      // Start processing
+      await processBatchJobs(createData.queueStats.pending);
+    } catch (e) {
+      showToast('Batch analysis failed', 'error');
+      setBatchRunning(false);
+    }
+  }
+
+  // Process batch jobs with progress updates
+  async function processBatchJobs(totalJobs: number) {
+    let processed = 0;
+    let hasMore = true;
+
+    while (hasMore && processed < totalJobs) {
+      try {
+        const res = await fetch('/api/analysis/worker', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ maxJobs: 10, shareResearch: true }),
+        });
+        const data = await res.json();
+
+        if (!data.success) {
+          console.error('Worker error:', data.error);
+          // Continue trying
+        }
+
+        processed += data.processed || 0;
+        setBatchProgress({ processed, total: totalJobs });
+        setQueueStats(data.queueStats);
+        hasMore = data.hasMoreJobs;
+
+        // Small delay between batches
+        await new Promise(r => setTimeout(r, 500));
+      } catch (e) {
+        console.error('Batch processing error:', e);
+        await new Promise(r => setTimeout(r, 2000)); // Longer delay on error
+      }
+    }
+
+    showToast(`Batch analysis complete: ${processed} variants analyzed`, 'success');
+    setBatchRunning(false);
+    setBatchProgress(null);
+    loadDashboard();
+    loadQueueStats();
   }
 
   function formatTime(iso: string) {
@@ -121,6 +225,95 @@ export default function DashboardPage() {
             <p className="text-sm text-gray-400 mb-1">Pending Updates</p>
             <p className="text-2xl font-semibold text-blue-400">{metrics?.pendingUpdates ?? 0}</p>
           </div>
+        </div>
+
+        {/* Batch Analysis Section */}
+        <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="font-semibold text-lg">Batch Analysis</h3>
+              <p className="text-sm text-gray-400">
+                Analyze all products efficiently with smart grouping and shared research
+              </p>
+            </div>
+            <button
+              onClick={startBatchAnalysis}
+              disabled={batchRunning || syncing}
+              className="bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-6 py-3 rounded-lg text-sm font-medium flex items-center gap-2"
+            >
+              {batchRunning ? (
+                <>
+                  <div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
+                  Processing...
+                </>
+              ) : (
+                <>
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                  Analyze All Products
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Progress bar */}
+          {batchProgress && (
+            <div className="mb-4">
+              <div className="flex justify-between text-sm text-gray-400 mb-1">
+                <span>Progress</span>
+                <span>{batchProgress.processed} / {batchProgress.total} variants</span>
+              </div>
+              <div className="h-3 bg-gray-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-purple-500 transition-all duration-300"
+                  style={{ width: `${Math.round((batchProgress.processed / batchProgress.total) * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Queue stats */}
+          {queueStats && (queueStats.pending > 0 || queueStats.processing > 0) && (
+            <div className="grid grid-cols-4 gap-4 text-center">
+              <div className="bg-gray-700/50 rounded p-2">
+                <p className="text-xl font-semibold text-yellow-400">{queueStats.pending}</p>
+                <p className="text-xs text-gray-400">Pending</p>
+              </div>
+              <div className="bg-gray-700/50 rounded p-2">
+                <p className="text-xl font-semibold text-blue-400">{queueStats.processing}</p>
+                <p className="text-xs text-gray-400">Processing</p>
+              </div>
+              <div className="bg-gray-700/50 rounded p-2">
+                <p className="text-xl font-semibold text-green-400">{queueStats.completed}</p>
+                <p className="text-xs text-gray-400">Completed</p>
+              </div>
+              <div className="bg-gray-700/50 rounded p-2">
+                <p className="text-xl font-semibold text-red-400">{queueStats.failed}</p>
+                <p className="text-xs text-gray-400">Failed</p>
+              </div>
+            </div>
+          )}
+
+          {/* Groups being processed */}
+          {queueStats && queueStats.byGroup.length > 0 && (
+            <div className="mt-4 text-sm">
+              <p className="text-gray-400 mb-2">Product groups in queue:</p>
+              <div className="flex flex-wrap gap-2">
+                {queueStats.byGroup.slice(0, 5).map(g => (
+                  <span key={g.group} className="px-2 py-1 bg-gray-700 rounded text-xs">
+                    {g.group.replace(':', ' / ')} ({g.count})
+                  </span>
+                ))}
+                {queueStats.byGroup.length > 5 && (
+                  <span className="px-2 py-1 bg-gray-700 rounded text-xs text-gray-400">
+                    +{queueStats.byGroup.length - 5} more
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Action Cards */}
