@@ -1,5 +1,7 @@
 // Server-side Shopify API client — no CORS issues since this runs on the server
 
+import { shopifyRateLimiter } from './rate-limiter';
+
 const SHOPIFY_API_VERSION = '2024-10';
 
 function getShopifyConfig() {
@@ -183,14 +185,15 @@ export async function fetchAllProducts() {
   return allProducts;
 }
 
-// Update a variant's price
+// Update a variant's price (rate-limited for safe batch processing)
 export async function updateVariantPrice(variantId: string, newPrice: number) {
-  return shopifyFetch(`variants/${variantId}.json`, {
-    method: 'PUT',
-    body: JSON.stringify({
-      variant: { id: parseInt(variantId), price: newPrice.toFixed(2) },
-    }),
-  });
+  return shopifyRateLimiter.execute(() =>
+    shopifyFetch(`variants/${variantId}.json`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        variant: { id: parseInt(variantId), price: newPrice.toFixed(2) },
+      }),
+    }), 3);
 }
 
 // Test the Shopify connection

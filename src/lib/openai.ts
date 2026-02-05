@@ -1,5 +1,7 @@
 // Server-side OpenAI client using GPT-5.2 (most capable model)
 
+import { openaiRateLimiter } from './rate-limiter';
+
 function getOpenAIKey(): string {
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error('OPENAI_API_KEY not configured');
@@ -66,33 +68,36 @@ export async function chatCompletion(options: ChatCompletionOptions): Promise<st
     }
   }
 
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${key}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
+  // Route through rate limiter to prevent overwhelming OpenAI during parallel batch processing
+  return openaiRateLimiter.execute(async () => {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
-    throw new Error(err.error?.message || `OpenAI error: ${res.status}`);
-  }
-
-  const data = await res.json();
-  const content = data.choices[0]?.message?.content;
-
-  if (!content) {
-    // Check for refusal or other issues
-    const refusal = data.choices[0]?.message?.refusal;
-    if (refusal) {
-      throw new Error(`AI refused: ${refusal}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
+      throw new Error(err.error?.message || `OpenAI error: ${res.status}`);
     }
-    throw new Error('AI returned empty response');
-  }
 
-  return content;
+    const data = await res.json();
+    const content = data.choices[0]?.message?.content;
+
+    if (!content) {
+      // Check for refusal or other issues
+      const refusal = data.choices[0]?.message?.refusal;
+      if (refusal) {
+        throw new Error(`AI refused: ${refusal}`);
+      }
+      throw new Error('AI returned empty response');
+    }
+
+    return content;
+  }, 3);
 }
 
 // Parse JSON from AI response, handling markdown code blocks and common issues

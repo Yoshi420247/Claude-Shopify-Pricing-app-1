@@ -115,3 +115,8 @@ export const openaiRateLimiter = new RateLimiter({
   requestsPerSecond: 5,
   maxPerMinute: 200,
 });
+
+export const shopifyRateLimiter = new RateLimiter({
+  requestsPerSecond: 2,  // Shopify REST Admin API bucket rate
+  maxPerMinute: 80,      // Stay under Shopify's 120/min limit
+});
