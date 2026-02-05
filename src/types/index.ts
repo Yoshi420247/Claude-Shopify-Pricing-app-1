@@ -142,6 +142,23 @@ export interface AnalysisResult {
   priceFloor: number;
   priceCeiling: number;
   marketPosition: string;
+  // Advanced pricing strategy fields
+  pricingStrategy?: {
+    strategyType: 'value-leader' | 'competitive' | 'premium' | 'luxury';
+    profitMargin: number;
+    profitDollars: number;
+    psychologicalFactors: string[];
+    competitorIntelligence: {
+      weightedMedian: number;
+      reliability: 'high' | 'medium' | 'low';
+      marketGap: number | null;
+    };
+    anchorStrategy?: {
+      useAnchor: boolean;
+      suggestedMsrp: number | null;
+      anchorDiscount: number;
+    };
+  };
 }
 
 export interface DeliberationResult {
