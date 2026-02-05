@@ -4,7 +4,7 @@ import { runFullAnalysis, saveAnalysis } from '@/lib/pricing-engine';
 import type { Product, Variant, Settings } from '@/types';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 120;
+export const maxDuration = 300; // 5 minutes - analysis involves multiple API calls
 
 export async function POST(req: NextRequest) {
   try {
