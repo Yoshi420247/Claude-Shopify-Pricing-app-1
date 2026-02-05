@@ -1,9 +1,16 @@
 // Core AI pricing analysis pipeline using GPT-5.2 with reasoning
 // Handles: product identification → competitor search → AI pricing → deliberation
+// Enhanced with expert-level pricing strategies for optimal results
 
 import { chatCompletion, parseAIJson } from './openai';
 import { searchCompetitors, type CompetitorSearchResult } from './competitors';
 import { createServerClient } from './supabase';
+import {
+  analyzeCompetitorIntelligence,
+  calculateOptimalPrice,
+  determineAnchorStrategy,
+  type PricingContext,
+} from './pricing-strategies';
 import type {
   Product, Variant, Settings, ProductIdentity,
   AnalysisResult, DeliberationResult,
@@ -100,7 +107,7 @@ Respond in JSON:
 }
 
 // ============================================================================
-// Step 2: AI Pricing Analysis
+// Step 2: AI Pricing Analysis (Expert-Level with Advanced Strategies)
 // ============================================================================
 export async function analyzePricing(
   product: Product,
@@ -112,71 +119,157 @@ export async function analyzePricing(
 ): Promise<AnalysisResult> {
   const cost = variant.cost || 0;
   const currentPrice = variant.price;
+  const msrp = variant.compare_at_price;
   const originTier = identity.originTier || 'unknown';
+
+  // ============================================================================
+  // ADVANCED: Calculate optimal price using pricing strategies module
+  // ============================================================================
+  const pricingContext: PricingContext = {
+    cost,
+    currentPrice,
+    msrp,
+    identity,
+    competitors: competitorData.competitors,
+    settings,
+  };
+
+  const optimalPriceResult = calculateOptimalPrice(pricingContext);
+  const competitorIntel = analyzeCompetitorIntelligence(competitorData.competitors, identity);
+  const anchorStrategy = determineAnchorStrategy(
+    optimalPriceResult.price,
+    msrp,
+    competitorIntel,
+    settings
+  );
 
   // Build competitor sections
   let competitorSection = '';
   if (competitorData.competitors.length > 0) {
     competitorSection = `EXTRACTED COMPETITOR PRICES (${competitorData.competitors.length} found):
 ${competitorData.competitors.map((c, i) =>
-  `${i + 1}. ${c.source}: $${c.price.toFixed(2)}${c.isKnownRetailer ? ' [KNOWN RETAILER]' : ''}
+  `${i + 1}. ${c.source}: $${c.price.toFixed(2)}${c.isKnownRetailer ? ' [VERIFIED RETAILER]' : ''} [Weight: ${c.isKnownRetailer ? 'HIGH' : 'MEDIUM'}]
    URL: ${c.url}
    Title: ${c.title}
-   Source: ${c.extractionMethod}`
-).join('\n\n')}`;
+   Extraction: ${c.extractionMethod}`
+).join('\n\n')}
+
+COMPETITOR INTELLIGENCE SUMMARY:
+- Weighted Median Price: $${competitorIntel.weightedMedian.toFixed(2)}
+- Price Range: $${competitorIntel.priceFloor.toFixed(2)} - $${competitorIntel.priceCeiling.toFixed(2)}
+- Competitive Zone (25th-75th %): $${competitorIntel.competitiveRange.low.toFixed(2)} - $${competitorIntel.competitiveRange.high.toFixed(2)}
+- Data Reliability: ${competitorIntel.reliability.toUpperCase()}
+${competitorIntel.marketGap ? `- MARKET GAP OPPORTUNITY: $${competitorIntel.marketGap.toFixed(2)} (no direct competition)` : ''}
+${competitorIntel.dominantPricePoint ? `- Dominant Price Point: $${competitorIntel.dominantPricePoint}` : ''}`;
   }
 
   if (competitorData.rawResults.length > 0) {
     competitorSection += `\n\nADDITIONAL SEARCH RESULTS (${competitorData.rawResults.length} found):
-${competitorData.rawResults.slice(0, 15).map((r, i) =>
-  `${i + 1}. ${new URL(r.url).hostname.replace('www.', '')}
-   URL: ${r.url}
+${competitorData.rawResults.slice(0, 12).map((r, i) => {
+  let domain: string;
+  try {
+    domain = new URL(r.url).hostname.replace('www.', '');
+  } catch {
+    domain = 'unknown';
+  }
+  return `${i + 1}. ${domain}
    Title: ${r.title}
-   Description: ${(r.description || '').slice(0, 300)}`
-).join('\n\n')}`;
+   Snippet: ${(r.description || '').slice(0, 250)}`;
+}).join('\n\n')}`;
   }
 
   if (!competitorSection) {
-    competitorSection = 'NO COMPETITOR RESULTS FOUND';
+    competitorSection = 'NO COMPETITOR RESULTS FOUND - Use cost-based and tier-based pricing.';
   }
 
-  const systemPrompt = `You are a pricing analyst for a smoke shop (${settings.product_niche || 'heady glass, dab tools, concentrate accessories'}).
+  // ============================================================================
+  // EXPERT-LEVEL AI PROMPT
+  // ============================================================================
+  const systemPrompt = `You are a SENIOR E-COMMERCE PRICING STRATEGIST with 15+ years of experience optimizing retail pricing. Your expertise includes:
+- Price elasticity modeling
+- Psychological pricing tactics
+- Competitive positioning strategy
+- Profit margin optimization
+- Value-based pricing for specialty products
 
-YOUR PRIMARY GOAL: Analyze competitor prices and suggest an optimal price.
+You're pricing for: ${settings.product_niche || 'a specialty smoke shop (heady glass, dab tools, concentrate accessories)'}
 
-Quality Tier: "${originTier}" — for notes only, never exclude competitors based on tier.
-Product identified as: ${identity.identifiedAs || 'Unknown'}
-Key features: ${(identity.keyFeatures || []).join(', ')}
+PRODUCT CONTEXT:
+- Quality Tier: "${originTier.toUpperCase()}"
+- Product: ${identity.identifiedAs || 'Unknown'}
+- Key Value Drivers: ${(identity.keyFeatures || []).join(', ')}
+- Brand/Vendor: ${product.vendor || 'Unbranded'}
 
-BE MAXIMALLY INCLUSIVE WITH COMPETITORS. Only exclude:
-- Wholesale/B2B sites (${WHOLESALE_DOMAINS_SHORT.join(', ')})
-- Marketplace aggregators (Amazon, eBay, Etsy)
-- Completely unrelated products
+PRICING STRATEGY FRAMEWORK:
 
-Pricing Rules:
-- Minimum margin: ${settings.min_margin}% or $${settings.min_margin_dollars} (whichever higher)
-- ${settings.respect_msrp ? 'Never exceed MSRP' : 'May exceed MSRP if justified'}
-- Max ${settings.max_above}% above highest retail competitor
-- Max price increase: ${settings.max_increase}%
-- Max price decrease: ${settings.max_decrease}%
-- Rounding: ${settings.rounding_style}
+1. MARKET POSITION STRATEGY
+   - IMPORT (China mass-produced): Value-leader or competitive positioning. Price in lower 25-50% of market.
+   - DOMESTIC (USA-made): Competitive or premium positioning. Price at market median or slightly above.
+   - HEADY (Artisan/handmade): Premium or luxury positioning. Price in upper 75-90% of market.
+
+2. PROFIT OPTIMIZATION
+   - Target markups by tier: Import 2-4x, Domestic 2-3x, Heady 3-10x
+   - Balance volume vs. margin based on tier
+   - Never sacrifice minimum margin requirements
+
+3. PSYCHOLOGICAL PRICING
+   - Use .99 endings for value positioning (effective under $100)
+   - Use round numbers ($50, $100) for premium/heady items
+   - Respect price thresholds ($99 vs $100 has significant impact)
+   - Apply left-digit effect ($39 vs $40)
+
+4. COMPETITIVE INTELLIGENCE
+   - Weight verified retailers more heavily than unknown sources
+   - Consider price clustering (where competitors cluster = market equilibrium)
+   - Identify gaps in the market as opportunities
+   - Don't blindly match lowest price - consider positioning
+
+5. VALUE-BASED ADJUSTMENTS
+   - Unique features justify premium
+   - Brand recognition commands higher prices
+   - Limited availability/exclusivity supports premium pricing
+   - Quality indicators (materials, craftsmanship) affect perceived value
+
+ALGORITHMIC RECOMMENDATION (from pricing engine):
+- Optimal Price: $${optimalPriceResult.price.toFixed(2)}
+- Strategy: ${optimalPriceResult.strategy}
+- Confidence: ${optimalPriceResult.confidence}
+- Profit Margin: ${optimalPriceResult.profitMargin.toFixed(1)}%
+- Psychological Factors: ${optimalPriceResult.psychologicalFactors.join(', ')}
+${anchorStrategy.useAnchor ? `- MSRP Anchor: $${anchorStrategy.suggestedMsrp?.toFixed(2)} (${anchorStrategy.anchorDiscount.toFixed(0)}% perceived savings)` : ''}
+
+CONSTRAINTS (Must follow):
+- Minimum margin: ${settings.min_margin}% OR $${settings.min_margin_dollars} (whichever is higher)
+- ${settings.respect_msrp ? 'MSRP ceiling: Never exceed MSRP' : 'MSRP: May exceed if market supports'}
+- Max ${settings.max_above}% above highest competitor
+- Max price change: +${settings.max_increase}% / -${settings.max_decrease}%
+- Rounding style: ${settings.rounding_style}
+
+YOUR TASK:
+Analyze all data, validate or adjust the algorithmic recommendation, and provide the OPTIMAL price that maximizes profit while maintaining competitive positioning.
 
 Respond in JSON:
 {
   "suggestedPrice": number,
   "confidence": "high" | "medium" | "low",
-  "confidenceReason": "string",
-  "summary": "1-2 sentence recommendation",
-  "reasoning": ["step1", "step2", "step3"],
+  "confidenceReason": "detailed explanation",
+  "summary": "2-3 sentence executive summary of recommendation",
+  "reasoning": [
+    "Step 1: Market analysis...",
+    "Step 2: Competitive positioning...",
+    "Step 3: Profit optimization...",
+    "Step 4: Psychological pricing...",
+    "Step 5: Final price determination..."
+  ],
   "productMatch": {
-    "identifiedAs": "string",
+    "identifiedAs": "specific product description",
     "originTier": "import|domestic|heady",
     "matchConfidence": "high|medium|low",
-    "matchNotes": "string"
+    "matchNotes": "notes on product identification"
   },
   "competitorAnalysis": {
-    "kept": [{"source": "name", "url": "URL", "price": number, "productMatch": "exact|similar|equivalent", "tierMatch": "same|different", "reason": "why kept"}],
-    "excluded": [{"source": "domain", "url": "URL", "reason": "string"}],
+    "kept": [{"source": "retailer", "url": "URL", "price": number, "productMatch": "exact|similar|equivalent", "tierMatch": "same|different", "reason": "why included", "weight": "high|medium|low"}],
+    "excluded": [{"source": "domain", "url": "URL", "reason": "specific exclusion reason"}],
     "low": number|null,
     "median": number|null,
     "high": number|null,
@@ -184,35 +277,47 @@ Respond in JSON:
   },
   "priceFloor": number,
   "priceCeiling": number,
-  "marketPosition": "below market|at market|above market|premium|unknown"
+  "marketPosition": "value-leader|competitive|premium|luxury",
+  "expertInsights": {
+    "keyOpportunity": "main pricing opportunity identified",
+    "riskFactors": ["potential risk 1", "potential risk 2"],
+    "alternativeStrategy": "what would change if different positioning desired"
+  }
 }`;
 
-  const descText = (product.description || product.description_html?.replace(/<[^>]*>/g, ' ') || '').substring(0, 400);
+  const descText = (product.description || product.description_html?.replace(/<[^>]*>/g, ' ') || '').substring(0, 500);
 
-  const userPrompt = `Analyze pricing for this product:
+  const userPrompt = `Perform expert pricing analysis:
 
-PRODUCT: ${product.title}
-Variant: ${variant.title || 'Default'} (SKU: ${variant.sku || 'N/A'})
-Vendor: ${product.vendor || 'Unknown'}
-Type: ${product.product_type || 'Unknown'}
-Current Price: $${currentPrice.toFixed(2)}
-Cost: ${cost > 0 ? '$' + cost.toFixed(2) : 'Unknown'}
-${variant.compare_at_price ? `MSRP: $${variant.compare_at_price.toFixed(2)}` : ''}
-${descText ? `Description: ${descText}` : ''}
+PRODUCT DETAILS:
+- Title: ${product.title}
+- Variant: ${variant.title || 'Default'} (SKU: ${variant.sku || 'N/A'})
+- Vendor/Brand: ${product.vendor || 'Unknown'}
+- Product Type: ${product.product_type || 'Unknown'}
+- Current Price: $${currentPrice.toFixed(2)}
+- Cost: ${cost > 0 ? '$' + cost.toFixed(2) + ` (current margin: ${((currentPrice - cost) / cost * 100).toFixed(1)}%)` : 'UNKNOWN - use tier-based estimation'}
+${msrp ? `- MSRP/Compare-At: $${msrp.toFixed(2)}` : ''}
+${descText ? `\nDescription:\n${descText}` : ''}
 
-AI IDENTIFICATION:
-- Identified as: ${identity.identifiedAs}
-- Type: ${identity.productType}
-- Tier: ${originTier.toUpperCase()} — ${identity.originReasoning}
-- Features: ${(identity.keyFeatures || []).join(', ')}
+AI PRODUCT IDENTIFICATION:
+- Identified As: ${identity.identifiedAs}
+- Category: ${identity.productType}
+- Quality Tier: ${originTier.toUpperCase()}
+- Tier Reasoning: ${identity.originReasoning}
+- Key Features: ${(identity.keyFeatures || []).join(', ')}
+- Quality Indicators: ${(identity.qualityIndicators || []).join(', ')}
+- Pricing Factors: ${identity.pricingFactors || 'None specified'}
 
 ${competitorSection}
 
-Instructions:
-1. Extract prices from ALL search results (look for $XX.XX patterns)
-2. Be maximally inclusive with competitors
-3. Calculate suggested price using all data
-4. Ensure margins meet requirements`;
+STRATEGIC QUESTIONS TO CONSIDER:
+1. Is the algorithmic recommendation of $${optimalPriceResult.price.toFixed(2)} optimal, or should it be adjusted?
+2. What market position best fits this product given its tier and features?
+3. Are there pricing psychology opportunities being missed?
+4. What's the profit-maximizing price within constraints?
+5. What risks exist at the suggested price point?
+
+Provide your expert analysis and final price recommendation.`;
 
   const raw = await chatCompletion({
     model,
@@ -220,16 +325,36 @@ Instructions:
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
     ],
-    maxTokens: 3000,
+    maxTokens: 4000,
     jsonMode: true,
     reasoningEffort: 'high',
   });
 
-  return parseAIJson<AnalysisResult>(raw);
+  const result = parseAIJson<AnalysisResult>(raw);
+
+  // Enrich result with pricing strategy data
+  result.pricingStrategy = {
+    strategyType: optimalPriceResult.strategy as 'value-leader' | 'competitive' | 'premium' | 'luxury',
+    profitMargin: optimalPriceResult.profitMargin,
+    profitDollars: optimalPriceResult.profitDollars,
+    psychologicalFactors: optimalPriceResult.psychologicalFactors,
+    competitorIntelligence: {
+      weightedMedian: competitorIntel.weightedMedian,
+      reliability: competitorIntel.reliability,
+      marketGap: competitorIntel.marketGap,
+    },
+    anchorStrategy: anchorStrategy.useAnchor ? {
+      useAnchor: true,
+      suggestedMsrp: anchorStrategy.suggestedMsrp,
+      anchorDiscount: anchorStrategy.anchorDiscount,
+    } : undefined,
+  };
+
+  return result;
 }
 
 // ============================================================================
-// Step 3: Deep Deliberation (when competitor data is insufficient)
+// Step 3: Deep Deliberation (Expert-Level when competitor data is insufficient)
 // ============================================================================
 export async function deliberatePricing(
   product: Product,
@@ -241,57 +366,117 @@ export async function deliberatePricing(
 ): Promise<DeliberationResult> {
   const cost = variant.cost || 0;
   const currentPrice = variant.price;
+  const msrp = variant.compare_at_price;
   const originTier = identity.originTier || 'unknown';
-  const descText = (product.description || product.description_html?.replace(/<[^>]*>/g, ' ') || '').substring(0, 500);
+  const descText = (product.description || product.description_html?.replace(/<[^>]*>/g, ' ') || '').substring(0, 600);
+
+  // Calculate cost-based optimal even without competitors
+  const pricingContext: PricingContext = {
+    cost,
+    currentPrice,
+    msrp,
+    identity,
+    competitors: [], // Empty for deliberation
+    settings,
+  };
+  const fallbackOptimal = calculateOptimalPrice(pricingContext);
 
   const messageContent: Array<{ type: string; text?: string; image_url?: { url: string; detail: string } }> = [];
 
   messageContent.push({
     type: 'text',
-    text: `You are a senior pricing strategist. Initial analysis found INSUFFICIENT competitor data. Determine a price using ALL available information.
+    text: `You are a MASTER PRICING STRATEGIST with deep expertise in specialty retail. Initial analysis found INSUFFICIENT competitor data. You must determine the OPTIMAL price using expert knowledge and all available signals.
 
-${product.image_url ? 'IMPORTANT: A product image is attached. Examine it carefully for quality, materials, craftsmanship.' : 'No image available.'}
+${product.image_url ? 'CRITICAL: A product image is attached. Perform thorough visual analysis for quality indicators, materials, craftsmanship, and brand signals.' : 'No image available - rely on text signals.'}
 
-PRODUCT:
-- Title: ${product.title}
-- Variant: ${variant.title || 'Default'}
-- Description: ${descText || 'None'}
-- Vendor: ${product.vendor || 'Unknown'}
-- Type: ${identity.productType || product.product_type || 'Unknown'}
-- Quality Tier: ${originTier.toUpperCase()}
-- Current Price: $${currentPrice.toFixed(2)}
-- Cost: ${cost > 0 ? '$' + cost.toFixed(2) : 'Unknown'}
-- Compare At: ${variant.compare_at_price ? '$' + variant.compare_at_price.toFixed(2) : 'None'}
+PRODUCT DATA:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Title: ${product.title}
+Variant: ${variant.title || 'Default'}
+Vendor/Brand: ${product.vendor || 'Unknown'}
+Product Type: ${identity.productType || product.product_type || 'Unknown'}
+Quality Tier: ${originTier.toUpperCase()}
 
-INITIAL ANALYSIS:
-- Suggested: $${initialAnalysis.suggestedPrice?.toFixed(2) || 'None'}
-- Confidence: ${initialAnalysis.confidence}
-- Competitors Found: ${initialAnalysis.competitorAnalysis?.retailCount || 0}
+Description:
+${descText || 'No description available'}
 
-DETERMINE PRICE USING:
-1. Visual analysis (if image provided)
-2. Cost-based: import 2-4x, domestic 2-3x, heady 3-10x markup
-3. Category norms: import $5-50, domestic $20-150, heady $50-500+
-4. Current price evaluation
-5. Minimum margin: ${settings.min_margin}% or $${settings.min_margin_dollars}
+Identified As: ${identity.identifiedAs || 'Unknown'}
+Key Features: ${(identity.keyFeatures || []).join(', ') || 'None identified'}
+Quality Indicators: ${(identity.qualityIndicators || []).join(', ') || 'None identified'}
+Pricing Factors: ${identity.pricingFactors || 'None specified'}
+
+FINANCIAL DATA:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Current Price: $${currentPrice.toFixed(2)}
+Cost: ${cost > 0 ? '$' + cost.toFixed(2) : 'UNKNOWN'}
+${cost > 0 ? `Current Margin: ${((currentPrice - cost) / cost * 100).toFixed(1)}%` : ''}
+MSRP/Compare At: ${msrp ? '$' + msrp.toFixed(2) : 'None'}
+
+INITIAL ANALYSIS (insufficient data):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Suggested: $${initialAnalysis.suggestedPrice?.toFixed(2) || 'None'}
+Confidence: ${initialAnalysis.confidence || 'low'}
+Competitors Found: ${initialAnalysis.competitorAnalysis?.retailCount || 0}
+
+ALGORITHMIC FALLBACK ESTIMATE:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Cost-Based Price: $${fallbackOptimal.price.toFixed(2)}
+Strategy: ${fallbackOptimal.strategy}
+Reasoning: ${fallbackOptimal.reasoning.slice(0, 3).join(' | ')}
+
+EXPERT PRICING FRAMEWORK:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. VISUAL ASSESSMENT (if image available):
+   - Material quality (glass thickness, clarity, impurities)
+   - Craftsmanship (seams, symmetry, finish quality)
+   - Brand indicators (logos, signatures, artist marks)
+   - Complexity (simple vs. intricate design)
+   - Size estimation
+
+2. TIER-BASED PRICING RANGES:
+   IMPORT: $5-50 (commodity), markup 2-4x cost
+   DOMESTIC: $20-150 (quality), markup 2-3x cost
+   HEADY: $50-500+ (art), markup 3-10x cost
+
+3. VALUE MULTIPLIERS:
+   - Known brand: +15-30%
+   - Artist signature: +50-200%
+   - Limited edition: +25-50%
+   - Unique/one-of-a-kind: +100-500%
+   - Premium materials (quartz, thick glass): +10-25%
+
+4. PSYCHOLOGICAL PRICE POINTS:
+   - Under $25: Use .99 endings
+   - $25-100: Use .99 or round to $5
+   - $100+: Use round numbers for premium feel
+
+5. CONSTRAINTS:
+   - Min margin: ${settings.min_margin}% or $${settings.min_margin_dollars}
+   - ${settings.respect_msrp ? 'Must not exceed MSRP' : 'May exceed MSRP if justified'}
+   - Max change: +${settings.max_increase}% / -${settings.max_decrease}%
+   - Rounding: ${settings.rounding_style}
+
+YOUR MISSION:
+Synthesize ALL available information to determine the OPTIMAL price. Be confident - you have enough data to make an informed decision.
 
 Respond in JSON:
 {
   "deliberatedPrice": number,
   "confidence": "high"|"medium"|"low",
-  "confidenceReason": "string",
-  "visualAnalysis": "string",
+  "confidenceReason": "detailed justification",
+  "visualAnalysis": "thorough visual assessment or 'No image available'",
   "reasoning": {
-    "costAnalysis": "string",
-    "categoryNorms": "string",
-    "currentPriceAssessment": "string",
-    "marginCheck": "string",
-    "finalDecision": "string"
+    "costAnalysis": "cost-based calculation and markup applied",
+    "categoryNorms": "how this fits within tier/category pricing",
+    "currentPriceAssessment": "is current price appropriate, too high, or too low",
+    "marginCheck": "verification that margin requirements are met",
+    "finalDecision": "synthesized reasoning for final price"
   },
   "priceFloor": number,
   "priceCeiling": number,
-  "alternativeConsiderations": "string",
-  "suggestedAction": "keep"|"increase"|"decrease"
+  "alternativeConsiderations": "what factors could change this recommendation",
+  "suggestedAction": "keep"|"increase"|"decrease",
+  "expertNotes": "any additional strategic insights"
 }`,
   });
 
@@ -310,11 +495,11 @@ Respond in JSON:
     messages: [
       {
         role: 'system',
-        content: 'You are an expert pricing strategist who NEVER gives up. You MUST provide a concrete price. Use visual analysis, cost analysis, category knowledge, and business logic.',
+        content: `You are a MASTER PRICING STRATEGIST specializing in specialty retail. You have 20+ years of experience pricing products in niche markets. You NEVER say "I cannot determine a price" - you always provide a concrete, justified recommendation based on available signals. Use visual analysis, cost data, category knowledge, brand signals, and business logic to determine optimal pricing.`,
       },
       { role: 'user', content: messageContent as never },
     ],
-    maxTokens: 2000,
+    maxTokens: 3000,
     jsonMode: true,
     reasoningEffort: 'xhigh', // Maximum reasoning for deep deliberation
   });
