@@ -127,6 +127,8 @@ When insufficient competitor data is found:
 | `src/types/index.ts` | All TypeScript interfaces |
 | `src/components/ProductsContent.tsx` | Main product table with bulk analysis |
 | `src/components/ProductModal.tsx` | Detailed variant view with analysis |
+| `scripts/batch-analyze.ts` | Standalone batch runner for GitHub Actions |
+| `.github/workflows/batch-analyze.yml` | GitHub Actions workflow for batch processing |
 
 ## Configuration (Settings)
 
@@ -284,6 +286,59 @@ Brave is the primary bottleneck (0.5 req/sec vs OpenAI's 5 req/sec)
 - Graceful degradation on search failures
 - Deliberation fallback for insufficient data
 - Comprehensive activity logging
+
+### GitHub Actions Batch Processing
+
+The Vercel deployment has a 300s serverless timeout which is too short for batch analysis (each analysis takes 30-90s due to Brave rate limiting). For large batches, use the **GitHub Actions workflow** which has a 6-hour timeout and runs as a single long-lived process (rate limiter singletons work properly).
+
+**Workflow:** `.github/workflows/batch-analyze.yml`
+**Script:** `scripts/batch-analyze.ts`
+**Tsconfig:** `tsconfig.scripts.json` (separate from Next.js build)
+
+#### How to Run
+
+1. Go to GitHub repo → Actions → "Batch Price Analysis"
+2. Click "Run workflow"
+3. Configure inputs:
+   - **Vendor**: Filter by vendor name (empty = all vendors)
+   - **Status**: `active`, `draft`, or `all`
+   - **Concurrency**: 1-5 parallel analyses (default 2)
+   - **Limit**: Max variants to process (0 = unlimited)
+   - **Dry run**: Analyze without applying prices
+4. Click "Run workflow"
+
+#### Required GitHub Secrets
+
+Set these in repo Settings → Secrets and variables → Actions:
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `OPENAI_API_KEY`
+- `BRAVE_API_KEY`
+- `SHOPIFY_STORE_NAME`
+- `SHOPIFY_ACCESS_TOKEN`
+
+#### Features
+- **AI Unlimited Mode**: Always enabled — no margin floors, MSRP limits, or change caps
+- **Auto-Apply**: Prices are applied to Shopify immediately after analysis (unless `--dry-run` or `--skip-apply`)
+- **Fatal Error Detection**: Stops batch on OpenAI quota/billing errors
+- **Progress Logging**: Console output shows per-variant progress with timestamps
+- **Activity Log**: Start and finish logged to Supabase `activity_log` table
+- **Pagination**: Handles stores with 1000+ products via Supabase pagination
+- **Configurable Concurrency**: Worker pool pattern processes N variants in parallel
+
+#### Running Locally
+
+```bash
+# Set env vars in .env.local or export them
+npm run batch-analyze -- --vendor "Artist Name" --status active --concurrency 2
+
+# Dry run (no price changes)
+npm run batch-analyze -- --status active --dry-run
+
+# Process first 10 variants only
+npm run batch-analyze -- --vendor "Some Brand" --limit 10
+```
 
 ---
 

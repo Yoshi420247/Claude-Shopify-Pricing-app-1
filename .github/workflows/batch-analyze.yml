@@ -1,0 +1,89 @@
+name: Batch Price Analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      vendor:
+        description: 'Vendor/brand name to filter (leave empty for ALL vendors)'
+        required: false
+        type: string
+        default: ''
+      status:
+        description: 'Product status filter'
+        required: true
+        type: choice
+        options:
+          - active
+          - draft
+          - all
+        default: 'active'
+      concurrency:
+        description: 'Number of parallel analyses (1-5)'
+        required: true
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
+        default: '2'
+      limit:
+        description: 'Max variants to process (0 = no limit)'
+        required: false
+        type: string
+        default: '0'
+      dry_run:
+        description: 'Dry run (analyze only, do NOT apply prices)'
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  analyze:
+    name: Run Batch Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours max
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install tsx
+        run: npm install -D tsx
+
+      - name: Run batch analysis
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+          SHOPIFY_STORE_NAME: ${{ secrets.SHOPIFY_STORE_NAME }}
+          SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+        run: |
+          ARGS="--status ${{ inputs.status }} --concurrency ${{ inputs.concurrency }}"
+
+          if [ -n "${{ inputs.vendor }}" ]; then
+            ARGS="$ARGS --vendor \"${{ inputs.vendor }}\""
+          fi
+
+          if [ "${{ inputs.limit }}" != "0" ] && [ -n "${{ inputs.limit }}" ]; then
+            ARGS="$ARGS --limit ${{ inputs.limit }}"
+          fi
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+
+          echo "Running: npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts $ARGS"
+          eval npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts $ARGS
