@@ -51,6 +51,22 @@ export default function ProductsContent() {
     startedAt: number;
   } | null>(null);
   const cancelBulkRef = useRef(false);
+  const [batchSize, setBatchSize] = useState<number>(50); // Default batch of 50
+  const [showBatchMenu, setShowBatchMenu] = useState(false);
+  const batchMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close batch menu on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (batchMenuRef.current && !batchMenuRef.current.contains(e.target as Node)) {
+        setShowBatchMenu(false);
+      }
+    }
+    if (showBatchMenu) {
+      document.addEventListener('mousedown', handleClick);
+      return () => document.removeEventListener('mousedown', handleClick);
+    }
+  }, [showBatchMenu]);
 
   const vendors = [...new Set(rows.map(r => r.product.vendor).filter(Boolean))] as string[];
 
@@ -360,11 +376,20 @@ export default function ProductsContent() {
     }
   }
 
+  // Analyze a batch from a list (respects batchSize)
+  function analyzeBatch(items: VariantRow[], size?: number) {
+    const count = size ?? batchSize;
+    const batch = items.slice(0, count);
+    if (batch.length === 0) return;
+    runBulkAnalysis(batch);
+  }
+
   // Bulk analyze selected
-  function analyzeSelected() {
+  function analyzeSelected(size?: number) {
     const selectedRows = rows.filter(r => selected.has(r.id));
     if (selectedRows.length === 0) return;
-    runBulkAnalysis(selectedRows);
+    const count = size ?? batchSize;
+    runBulkAnalysis(selectedRows.slice(0, count));
   }
 
   // Bulk accept all selected with suggestions
@@ -384,10 +409,11 @@ export default function ProductsContent() {
     showToast(`Applied ${success} price updates`, 'success');
   }
 
-  // Analyze all visible
-  function analyzeAllVisible() {
+  // Analyze all visible (respects batchSize)
+  function analyzeAllVisible(size?: number) {
     if (filtered.length === 0) return;
-    runBulkAnalysis(filtered);
+    const count = size ?? batchSize;
+    runBulkAnalysis(filtered.slice(0, count));
   }
 
   // CSV export
@@ -513,23 +539,63 @@ export default function ProductsContent() {
           <option value="margin-asc">Margin: Low-High</option>
           <option value="margin-desc">Margin: High-Low</option>
         </select>
-        <button onClick={analyzeAllVisible} disabled={!!bulkProgress}
-          className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded text-sm flex items-center gap-2">
-          {bulkProgress ? (
-            <>
-              <div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
-              {bulkProgress.completed + bulkProgress.failed}/{bulkProgress.total}
-            </>
-          ) : (
-            <>
+        {/* Batch Analysis Button with Size Picker */}
+        <div className="relative" ref={batchMenuRef}>
+          <div className="flex">
+            <button
+              onClick={() => analyzeAllVisible()}
+              disabled={!!bulkProgress}
+              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded-l text-sm flex items-center gap-2"
+            >
+              {bulkProgress ? (
+                <>
+                  <div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
+                  {bulkProgress.completed + bulkProgress.failed}/{bulkProgress.total}
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                  </svg>
+                  Analyze {Math.min(batchSize, filtered.length)} of {filtered.length}
+                </>
+              )}
+            </button>
+            <button
+              onClick={() => setShowBatchMenu(prev => !prev)}
+              disabled={!!bulkProgress}
+              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 border-l border-blue-500 px-2 py-2 rounded-r text-sm"
+            >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
               </svg>
-              Analyze All Visible ({filtered.length})
-            </>
+            </button>
+          </div>
+          {showBatchMenu && !bulkProgress && (
+            <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1 min-w-[200px]">
+              <div className="px-3 py-2 text-xs text-gray-400 border-b border-gray-700">Batch Size</div>
+              {[10, 25, 50, 100, 250, 500].map(size => (
+                <button
+                  key={size}
+                  onClick={() => { setBatchSize(size); setShowBatchMenu(false); }}
+                  className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-700 flex items-center justify-between ${batchSize === size ? 'text-blue-400' : 'text-gray-300'}`}
+                >
+                  <span>{size} variants</span>
+                  {batchSize === size && <span className="text-xs">current</span>}
+                </button>
+              ))}
+              <div className="border-t border-gray-700 mt-1 pt-1">
+                <button
+                  onClick={() => { analyzeAllVisible(filtered.length); setShowBatchMenu(false); }}
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-gray-700 text-yellow-400"
+                >
+                  All {filtered.length} variants
+                </button>
+              </div>
+            </div>
           )}
-        </button>
+        </div>
         <button onClick={exportCSV}
           className="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm">
           Export CSV
@@ -689,10 +755,16 @@ export default function ProductsContent() {
         <div className="bg-gray-800 border-t border-blue-500 px-4 py-3 flex items-center justify-between">
           <span className="text-sm font-medium">{selectedCount} variant{selectedCount > 1 ? 's' : ''} selected</span>
           <div className="flex items-center gap-3">
-            <button onClick={analyzeSelected} disabled={!!bulkProgress}
+            <button onClick={() => analyzeSelected()} disabled={!!bulkProgress}
               className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-2 rounded text-sm">
-              {bulkProgress ? 'Analysis Running...' : 'Analyze Selected'}
+              {bulkProgress ? 'Analysis Running...' : selectedCount > batchSize ? `Analyze First ${batchSize}` : 'Analyze Selected'}
             </button>
+            {selectedCount > batchSize && !bulkProgress && (
+              <button onClick={() => analyzeSelected(selectedCount)}
+                className="bg-blue-500/50 hover:bg-blue-600 px-4 py-2 rounded text-sm">
+                Analyze All {selectedCount}
+              </button>
+            )}
             {hasSelectedSuggestions && (
               <button onClick={acceptAllSelected} className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded text-sm">
                 Accept All Suggestions
