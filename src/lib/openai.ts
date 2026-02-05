@@ -81,17 +81,63 @@ export async function chatCompletion(options: ChatCompletionOptions): Promise<st
   }
 
   const data = await res.json();
-  return data.choices[0].message.content;
+  const content = data.choices[0]?.message?.content;
+
+  if (!content) {
+    // Check for refusal or other issues
+    const refusal = data.choices[0]?.message?.refusal;
+    if (refusal) {
+      throw new Error(`AI refused: ${refusal}`);
+    }
+    throw new Error('AI returned empty response');
+  }
+
+  return content;
 }
 
-// Parse JSON from AI response, handling markdown code blocks
+// Parse JSON from AI response, handling markdown code blocks and common issues
 export function parseAIJson<T>(raw: string): T {
+  if (!raw || raw.trim() === '') {
+    throw new Error('Empty response from AI');
+  }
+
   let cleaned = raw.trim();
+
   // Strip markdown code fences if present
   if (cleaned.startsWith('```')) {
     cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
   }
-  return JSON.parse(cleaned);
+
+  // Handle case where response might have text before/after JSON
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    cleaned = jsonMatch[0];
+  }
+
+  // Try to fix common JSON issues
+  // 1. Trailing commas
+  cleaned = cleaned.replace(/,\s*([\]}])/g, '$1');
+  // 2. Single quotes to double quotes (careful with apostrophes)
+  cleaned = cleaned.replace(/'([^']+)':/g, '"$1":');
+
+  try {
+    return JSON.parse(cleaned);
+  } catch (e) {
+    // If parsing fails, try to extract what we can
+    console.error('JSON parse error. Raw response:', raw.substring(0, 500));
+
+    // Last resort: try to parse a partial JSON
+    const partialMatch = cleaned.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/);
+    if (partialMatch) {
+      try {
+        return JSON.parse(partialMatch[0]);
+      } catch {
+        // Give up
+      }
+    }
+
+    throw new Error(`Failed to parse AI response as JSON: ${e instanceof Error ? e.message : 'Unknown error'}`);
+  }
 }
 
 // Test OpenAI connection
