@@ -53,11 +53,12 @@ When insufficient competitor data is found:
 ### 6. Persistent Batch Analysis (Products Page - Primary)
 - **Database-backed batch jobs** that survive page refreshes, browser crashes, and deployments
 - Select any number of products (even thousands) and process in configurable chunks (10-200)
+- **Concurrent processing**: Analyzes N variants simultaneously within each chunk (configurable 1-10, default 3)
 - Auto-resume on page load: if a batch was running when the page refreshed, it picks up where it left off
 - **Auto-Apply mode**: AI analyzes and immediately updates prices on Shopify, no manual review
 - **AI Unlimited mode**: removes all pricing guardrails (margin floors, MSRP limits, change caps)
 - **Full Autopilot**: combine both modes to let AI decide and apply all prices autonomously
-- Progress saved after each variant (not just per chunk), so minimal work is lost on crash
+- Progress saved periodically during concurrent processing, so minimal work is lost on crash
 - Cancel at any time with all progress preserved
 - After batch completes, "Apply All Suggestions" button bulk-applies to Shopify
 - Configuration modal with chunk size slider, AI Unlimited checkbox, Auto-Apply checkbox
@@ -217,6 +218,8 @@ BRAVE_API_KEY=BSAxxxxx
 
 11. **Persistent Batch System** - Replaced in-memory batch processing with a database-backed system. New `batch_jobs` table stores all batch state (variant IDs, progress, settings). Processing automatically resumes after page refreshes. Added auto-apply mode, AI unlimited mode, configurable chunk sizes, and bulk apply for completed batches.
 
+12. **Concurrent Batch Processing & Rate Limiting** - Batch processing was sequential (one variant at a time). Now processes N variants concurrently within each chunk using a worker-pool pattern. OpenAI calls were not rate-limited (raw fetch without throttling) — now routed through `openaiRateLimiter`. Shopify price updates had no rate limiting — now routed through new `shopifyRateLimiter` (2 req/sec, 80/min). Brave was already rate-limited via `braveRateLimiter` in `competitors.ts`. Concurrency is controlled by the `settings.concurrency` value (1-10, default 3). With concurrency=3, analyses overlap their I/O waits (while one waits for Brave, another runs OpenAI), giving ~2-3x throughput improvement without exceeding any API limits.
+
 ### Previous Issues (Resolved in Earlier Sessions)
 
 - **Large Catalog Support** - Supabase default limit is 1000 rows. Added pagination for products, variants, and analyses to support stores with 1000+ products.
@@ -251,10 +254,31 @@ Base: 50
 4. **Market Positioning** - Value-leader, competitive, premium, luxury
 5. **Price Anchoring** - Strategic MSRP/compare-at pricing
 
-### Rate Limiting
-- Brave API: 0.5 requests/second
-- OpenAI API: 5 requests/second
-- Automatic retry with exponential backoff
+### Rate Limiting & Concurrency
+All external API calls are routed through singleton rate limiters with exponential backoff:
+- **Brave Search**: 0.5 req/sec, 15/min — routed through `braveRateLimiter` in `competitors.ts`
+- **OpenAI GPT-5.2**: 5 req/sec, 200/min — routed through `openaiRateLimiter` in `openai.ts`
+- **Shopify REST**: 2 req/sec, 80/min — routed through `shopifyRateLimiter` in `shopify.ts`
+- **Supabase**: No explicit rate limiting needed (~100 req/sec connection pool)
+
+Concurrent batch processing uses a worker-pool pattern (`runWithConcurrency`) where N workers pull from a shared task queue. The rate limiters automatically serialize requests that would exceed API limits, so concurrent analyses safely overlap their I/O waits (e.g., while analysis A waits for Brave, analysis B runs its OpenAI step).
+
+**Important**: Rate limiter singletons are per-serverless-invocation. The system processes chunks within a single invocation to ensure rate limits are shared. Do NOT launch multiple concurrent `/api/batch/process` requests for the same batch.
+
+### Per-Analysis API Call Breakdown
+| Step | API | Calls | Notes |
+|------|-----|-------|-------|
+| identifyProduct | OpenAI | 1 | reasoning: high |
+| searchCompetitors | Brave | 3-30 | 3 broadening levels, up to 10 queries each |
+| extractPriceFromPage | HTTP | 0-8 | Direct fetch to retailer pages |
+| analyzePricing | OpenAI | 1 | reasoning: high |
+| reflectAndRetry | OpenAI+Brave | 0-11 | Only if <2 competitors found |
+| deliberatePricing | OpenAI | 0-1 | reasoning: xhigh, only if low confidence |
+| saveAnalysis | Supabase | 2 | DELETE + INSERT |
+| auto-apply | Shopify REST | 0-1 | Only if auto_apply enabled |
+
+Typical: 2-3 OpenAI + 5-15 Brave + 2 Supabase per analysis
+Brave is the primary bottleneck (0.5 req/sec vs OpenAI's 5 req/sec)
 
 ### Error Handling
 - Graceful degradation on search failures

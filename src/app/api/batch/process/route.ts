@@ -1,7 +1,8 @@
-// Process the next chunk of a batch job
+// Process the next chunk of a batch job with CONCURRENT analysis
 // Called repeatedly by the client to process one chunk at a time
-// Each chunk: analyze N variants, save results, optionally auto-apply
+// Each chunk: analyze N variants concurrently (default 3), save results, optionally auto-apply
 // All progress is persisted to DB so it survives page refreshes
+// Rate limiting is handled by the individual API clients (openai, brave, shopify)
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
@@ -15,6 +16,121 @@ export const maxDuration = 300; // 5 minutes per chunk
 interface VariantRef {
   productId: string;
   variantId: string;
+}
+
+interface ChunkResult {
+  variantId: string;
+  status: 'completed' | 'failed' | 'applied';
+  suggestedPrice?: number;
+  error?: string;
+}
+
+// Process a single variant (analysis + optional auto-apply)
+async function processOneVariant(
+  ref: VariantRef,
+  productMap: Map<string, Product>,
+  variantMap: Map<string, Variant>,
+  settings: Settings,
+  autoApply: boolean,
+  db: ReturnType<typeof createServerClient>,
+): Promise<{ result: ChunkResult; completed: boolean; applied: boolean }> {
+  const product = productMap.get(ref.productId);
+  const variant = variantMap.get(ref.variantId);
+
+  if (!product || !variant) {
+    return {
+      result: { variantId: ref.variantId, status: 'failed', error: 'Product or variant not found' },
+      completed: false,
+      applied: false,
+    };
+  }
+
+  try {
+    const analysisResult = await runFullAnalysis(product, variant, settings);
+
+    if (analysisResult.error) {
+      return {
+        result: { variantId: ref.variantId, status: 'failed', error: analysisResult.error },
+        completed: false,
+        applied: false,
+      };
+    }
+
+    // Save analysis to DB
+    await saveAnalysis(product.id, variant.id, analysisResult);
+
+    // Auto-apply if enabled and we have a suggested price
+    if (autoApply && analysisResult.suggestedPrice && analysisResult.suggestedPrice > 0) {
+      try {
+        await updateVariantPrice(variant.id, analysisResult.suggestedPrice);
+        await db.from('variants').update({ price: analysisResult.suggestedPrice }).eq('id', variant.id);
+        await db
+          .from('analyses')
+          .update({ applied: true, applied_at: new Date().toISOString() })
+          .match({ product_id: product.id, variant_id: variant.id });
+
+        return {
+          result: { variantId: ref.variantId, status: 'applied', suggestedPrice: analysisResult.suggestedPrice },
+          completed: true,
+          applied: true,
+        };
+      } catch (applyErr) {
+        const applyMsg = applyErr instanceof Error ? applyErr.message : 'Apply failed';
+        return {
+          result: {
+            variantId: ref.variantId,
+            status: 'completed',
+            suggestedPrice: analysisResult.suggestedPrice || undefined,
+            error: `Analysis OK, apply failed: ${applyMsg}`,
+          },
+          completed: true,
+          applied: false,
+        };
+      }
+    }
+
+    return {
+      result: { variantId: ref.variantId, status: 'completed', suggestedPrice: analysisResult.suggestedPrice || undefined },
+      completed: true,
+      applied: false,
+    };
+  } catch (e) {
+    const errorMsg = e instanceof Error ? e.message : 'Unknown error';
+    return {
+      result: { variantId: ref.variantId, status: 'failed', error: errorMsg },
+      completed: false,
+      applied: false,
+    };
+  }
+}
+
+// Run tasks with a concurrency limit (semaphore pattern)
+async function runWithConcurrency<T>(
+  tasks: (() => Promise<T>)[],
+  limit: number,
+  onItemDone?: (result: T, index: number) => void,
+): Promise<T[]> {
+  const results: T[] = new Array(tasks.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < tasks.length) {
+      const idx = nextIndex++;
+      try {
+        results[idx] = await tasks[idx]();
+      } catch (e) {
+        // Should not happen since tasks handle their own errors, but just in case
+        results[idx] = { error: e instanceof Error ? e.message : 'Worker error' } as T;
+      }
+      onItemDone?.(results[idx], idx);
+    }
+  }
+
+  // Launch `limit` workers that pull from the task queue
+  const workers = Array.from({ length: Math.min(limit, tasks.length) }, () => worker());
+  await Promise.all(workers);
+
+  return results;
 }
 
 export async function POST(req: NextRequest) {
@@ -115,103 +231,103 @@ export async function POST(req: NextRequest) {
     const productMap = new Map((products || []).map(p => [p.id, p as Product]));
     const variantMap = new Map((variants || []).map(v => [v.id, v as Variant]));
 
-    // Process each variant in the chunk sequentially (to avoid overwhelming APIs)
+    // Concurrency: use settings.concurrency (1-10, default 3)
+    // Brave is the bottleneck at 0.5 req/sec (15/min) — rate limiter queues naturally
+    // OpenAI at 5 req/sec handles 3-5 concurrent streams easily
+    // Higher concurrency = more overlap between slow Brave waits and OpenAI calls
+    const concurrency = Math.min(Math.max(settings.concurrency || 3, 1), 10);
+
     let chunkCompleted = 0;
     let chunkFailed = 0;
     let chunkApplied = 0;
-    const chunkResults: Array<{
-      variantId: string;
-      status: 'completed' | 'failed' | 'applied';
-      suggestedPrice?: number;
-      error?: string;
-    }> = [];
+    const chunkResults: ChunkResult[] = [];
+    let cancelled = false;
 
-    for (const ref of chunk) {
-      // Re-check batch status (user might have cancelled mid-chunk)
-      const { data: currentBatch } = await db
-        .from('batch_jobs')
-        .select('status')
-        .eq('id', batchId)
-        .single();
+    // Check for cancellation periodically (every 5 completed items, not every item)
+    let itemsSinceCheck = 0;
+    const CANCEL_CHECK_INTERVAL = 5;
 
-      if (currentBatch?.status === 'cancelled') {
-        break;
+    // Build task array for concurrent execution
+    const tasks = chunk.map((ref) => async () => {
+      // Check cancellation before starting a new analysis
+      if (cancelled) {
+        return {
+          result: { variantId: ref.variantId, status: 'failed' as const, error: 'Batch cancelled' },
+          completed: false,
+          applied: false,
+        };
       }
 
-      const product = productMap.get(ref.productId);
-      const variant = variantMap.get(ref.variantId);
+      return processOneVariant(ref, productMap, variantMap, settings, batch.auto_apply, db);
+    });
 
-      if (!product || !variant) {
+    // Process chunk with concurrency limit
+    const outcomes = await runWithConcurrency(tasks, concurrency, (outcome, _idx) => {
+      if (!outcome || cancelled) return;
+
+      const { result, completed, applied } = outcome;
+      chunkResults.push(result);
+
+      if (result.status === 'failed' && result.error !== 'Batch cancelled') {
         chunkFailed++;
-        chunkResults.push({ variantId: ref.variantId, status: 'failed', error: 'Product or variant not found' });
-        continue;
+      } else if (completed) {
+        chunkCompleted++;
+      }
+      if (applied) {
+        chunkApplied++;
       }
 
-      try {
-        // Run analysis
-        const result = await runFullAnalysis(product, variant, settings);
+      itemsSinceCheck++;
 
-        if (result.error) {
-          chunkFailed++;
-          chunkResults.push({ variantId: ref.variantId, status: 'failed', error: result.error });
-        } else {
-          // Save analysis
-          await saveAnalysis(product.id, variant.id, result);
-          chunkCompleted++;
+      // Periodically update progress in DB (crash-safe) and check cancellation
+      if (itemsSinceCheck >= CANCEL_CHECK_INTERVAL) {
+        itemsSinceCheck = 0;
 
-          // Auto-apply if enabled and we have a suggested price
-          if (batch.auto_apply && result.suggestedPrice && result.suggestedPrice > 0) {
-            try {
-              await updateVariantPrice(variant.id, result.suggestedPrice);
-              await db.from('variants').update({ price: result.suggestedPrice }).eq('id', variant.id);
+        // Fire-and-forget progress update (don't await to avoid blocking concurrent work)
+        void (async () => {
+          try {
+            await db.from('batch_jobs')
+              .update({
+                completed: (batch.completed || 0) + chunkCompleted,
+                failed: (batch.failed || 0) + chunkFailed,
+                applied: (batch.applied || 0) + chunkApplied,
+                current_chunk: (batch.current_chunk || 0) + 1,
+                last_error: result.error || batch.last_error,
+              })
+              .eq('id', batchId);
 
-              // Mark analysis as applied
-              await db
-                .from('analyses')
-                .update({ applied: true, applied_at: new Date().toISOString() })
-                .match({ product_id: product.id, variant_id: variant.id });
+            // Also check cancellation
+            const { data: statusCheck } = await db
+              .from('batch_jobs')
+              .select('status')
+              .eq('id', batchId)
+              .single();
 
-              chunkApplied++;
-              chunkResults.push({
-                variantId: ref.variantId,
-                status: 'applied',
-                suggestedPrice: result.suggestedPrice,
-              });
-            } catch (applyErr) {
-              // Analysis succeeded but apply failed - still count as completed
-              const applyMsg = applyErr instanceof Error ? applyErr.message : 'Apply failed';
-              chunkResults.push({
-                variantId: ref.variantId,
-                status: 'completed',
-                suggestedPrice: result.suggestedPrice || undefined,
-                error: `Analysis OK, apply failed: ${applyMsg}`,
-              });
+            if (statusCheck?.status === 'cancelled') {
+              cancelled = true;
             }
-          } else {
-            chunkResults.push({
-              variantId: ref.variantId,
-              status: 'completed',
-              suggestedPrice: result.suggestedPrice || undefined,
-            });
+          } catch {
+            /* ignore progress update failures */
           }
-        }
-      } catch (e) {
-        const errorMsg = e instanceof Error ? e.message : 'Unknown error';
-        chunkFailed++;
-        chunkResults.push({ variantId: ref.variantId, status: 'failed', error: errorMsg });
+        })();
       }
+    });
 
-      // Update progress in DB after each item (crash-safe)
-      await db
-        .from('batch_jobs')
-        .update({
-          completed: (batch.completed || 0) + chunkCompleted,
-          failed: (batch.failed || 0) + chunkFailed,
-          applied: (batch.applied || 0) + chunkApplied,
-          current_chunk: batch.current_chunk + 1,
-          last_error: chunkResults[chunkResults.length - 1]?.error || batch.last_error,
-        })
-        .eq('id', batchId);
+    // Ensure we captured any results from the last few items
+    // (the onItemDone callback above may have missed some due to concurrency timing)
+    for (const outcome of outcomes) {
+      if (outcome && !chunkResults.some(r => r.variantId === outcome.result.variantId)) {
+        const { result, completed, applied } = outcome;
+        chunkResults.push(result);
+        if (result.status === 'failed' && result.error !== 'Batch cancelled') {
+          chunkFailed++;
+        } else if (completed) {
+          chunkCompleted++;
+        }
+        if (applied) {
+          chunkApplied++;
+        }
+      }
     }
 
     // Final update for this chunk
@@ -246,6 +362,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       done: isDone,
+      concurrency,
       chunkResults,
       chunkCompleted,
       chunkFailed,
