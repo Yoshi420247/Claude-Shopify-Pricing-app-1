@@ -1,4 +1,5 @@
-// Server-side OpenAI client using GPT-5.2 (most capable model)
+// Server-side OpenAI client with automatic model fallback
+// Tries GPT-5.2 first, falls back to gpt-4o if not available
 
 function getOpenAIKey(): string {
   const key = process.env.OPENAI_API_KEY;
@@ -6,8 +7,11 @@ function getOpenAIKey(): string {
   return key;
 }
 
-// Use GPT-5.2 as default - best reasoning and vision capabilities
-const DEFAULT_MODEL = 'gpt-5.2';
+// Model configuration - tracks which model to use
+const PREFERRED_MODEL = 'gpt-5.2';
+const FALLBACK_MODEL = 'gpt-4o';
+let activeModel = PREFERRED_MODEL;
+let modelFallbackTriggered = false;
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -31,9 +35,34 @@ interface ChatCompletionOptions {
 
 export async function chatCompletion(options: ChatCompletionOptions): Promise<string> {
   const key = getOpenAIKey();
-  const model = options.model || DEFAULT_MODEL;
+  const model = options.model || activeModel;
 
-  // GPT-5.x and o1 models use max_completion_tokens
+  try {
+    return await makeRequest(key, model, options);
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+
+    // Check if it's a model access error - try fallback
+    if (!modelFallbackTriggered && model === PREFERRED_MODEL &&
+        (errorMsg.includes('model_not_found') ||
+         errorMsg.includes('does not have access') ||
+         errorMsg.includes('invalid_model') ||
+         errorMsg.includes('404'))) {
+      console.warn(`GPT-5.2 not available, falling back to ${FALLBACK_MODEL}`);
+      modelFallbackTriggered = true;
+      activeModel = FALLBACK_MODEL;
+      return await makeRequest(key, FALLBACK_MODEL, options);
+    }
+
+    throw error;
+  }
+}
+
+async function makeRequest(
+  key: string,
+  model: string,
+  options: ChatCompletionOptions
+): Promise<string> {
   const isGPT5 = model.startsWith('gpt-5');
   const isO1Model = model.startsWith('o1');
   const useNewParams = isGPT5 || isO1Model;
@@ -44,21 +73,17 @@ export async function chatCompletion(options: ChatCompletionOptions): Promise<st
   };
 
   if (useNewParams) {
-    // GPT-5.x uses max_completion_tokens
     body.max_completion_tokens = options.maxTokens || 4000;
 
-    // GPT-5.2 supports reasoning_effort parameter (top-level for Chat Completions API)
     if (isGPT5 && options.reasoningEffort) {
       body.reasoning_effort = options.reasoningEffort;
     }
 
-    // GPT-5.x supports JSON mode
     if (isGPT5 && options.jsonMode) {
       body.response_format = { type: 'json_object' };
     }
-    // o1 doesn't support temperature or response_format
   } else {
-    // Legacy models (GPT-4, etc)
+    // GPT-4 style params
     body.max_tokens = options.maxTokens || 4000;
     body.temperature = options.temperature ?? 0.3;
     if (options.jsonMode) {
@@ -75,27 +100,46 @@ export async function chatCompletion(options: ChatCompletionOptions): Promise<st
     body: JSON.stringify(body),
   });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
-    throw new Error(err.error?.message || `OpenAI error: ${res.status}`);
+  const data = await res.json();
+
+  // Handle API errors
+  if (!res.ok || data.error) {
+    const errorMsg = data.error?.message || `HTTP ${res.status}`;
+    const errorCode = data.error?.code || '';
+    throw new Error(`${errorMsg} (${errorCode})`);
   }
 
-  const data = await res.json();
-  const content = data.choices[0]?.message?.content;
+  const content = data.choices?.[0]?.message?.content;
 
   if (!content) {
-    // Check for refusal or other issues
-    const refusal = data.choices[0]?.message?.refusal;
+    // Log for debugging
+    console.error('OpenAI empty response:', JSON.stringify({
+      model,
+      finishReason: data.choices?.[0]?.finish_reason,
+      usage: data.usage,
+      hasChoices: !!data.choices?.length,
+    }));
+
+    const refusal = data.choices?.[0]?.message?.refusal;
     if (refusal) {
       throw new Error(`AI refused: ${refusal}`);
     }
-    throw new Error('AI returned empty response');
+
+    const finishReason = data.choices?.[0]?.finish_reason;
+    if (finishReason === 'length') {
+      throw new Error('Response truncated (increase max_tokens)');
+    }
+    if (finishReason === 'content_filter') {
+      throw new Error('Response blocked by content filter');
+    }
+
+    throw new Error(`Empty response (finish_reason: ${finishReason || 'unknown'})`);
   }
 
   return content;
 }
 
-// Parse JSON from AI response, handling markdown code blocks and common issues
+// Parse JSON from AI response with robust error handling
 export function parseAIJson<T>(raw: string): T {
   if (!raw || raw.trim() === '') {
     throw new Error('Empty response from AI');
@@ -103,56 +147,83 @@ export function parseAIJson<T>(raw: string): T {
 
   let cleaned = raw.trim();
 
-  // Strip markdown code fences if present
+  // Strip markdown code fences
   if (cleaned.startsWith('```')) {
     cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
   }
 
-  // Handle case where response might have text before/after JSON
+  // Extract JSON object from text
   const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
   if (jsonMatch) {
     cleaned = jsonMatch[0];
   }
 
-  // Try to fix common JSON issues
-  // 1. Trailing commas
-  cleaned = cleaned.replace(/,\s*([\]}])/g, '$1');
-  // 2. Single quotes to double quotes (careful with apostrophes)
-  cleaned = cleaned.replace(/'([^']+)':/g, '"$1":');
+  // Fix common issues
+  cleaned = cleaned.replace(/,\s*([\]}])/g, '$1'); // trailing commas
 
   try {
     return JSON.parse(cleaned);
   } catch (e) {
-    // If parsing fails, try to extract what we can
-    console.error('JSON parse error. Raw response:', raw.substring(0, 500));
-
-    // Last resort: try to parse a partial JSON
-    const partialMatch = cleaned.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/);
-    if (partialMatch) {
-      try {
-        return JSON.parse(partialMatch[0]);
-      } catch {
-        // Give up
-      }
-    }
-
-    throw new Error(`Failed to parse AI response as JSON: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    console.error('JSON parse error. First 500 chars:', raw.substring(0, 500));
+    throw new Error(`Invalid JSON: ${e instanceof Error ? e.message : 'parse error'}`);
   }
 }
 
-// Test OpenAI connection
+// Test OpenAI connection and check model availability
 export async function testOpenAIConnection() {
   try {
     const key = getOpenAIKey();
-    const res = await fetch('https://api.openai.com/v1/models', {
-      headers: { Authorization: `Bearer ${key}` },
+
+    // Test with a simple completion
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: activeModel,
+        messages: [{ role: 'user', content: 'Say "ok"' }],
+        max_tokens: 5,
+      }),
     });
-    if (res.ok) {
-      return { success: true };
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      // If preferred model fails, try fallback
+      if (activeModel === PREFERRED_MODEL) {
+        const fallbackRes = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: FALLBACK_MODEL,
+            messages: [{ role: 'user', content: 'Say "ok"' }],
+            max_tokens: 5,
+          }),
+        });
+
+        if (fallbackRes.ok) {
+          activeModel = FALLBACK_MODEL;
+          modelFallbackTriggered = true;
+          return { success: true, model: FALLBACK_MODEL, note: 'Using fallback model' };
+        }
+      }
+
+      return { success: false, error: data.error?.message || `HTTP ${res.status}` };
     }
-    return { success: false, error: `HTTP ${res.status}` };
+
+    return { success: true, model: activeModel };
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';
     return { success: false, error: message };
   }
+}
+
+// Get current active model
+export function getActiveModel(): string {
+  return activeModel;
 }
