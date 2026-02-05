@@ -52,16 +52,27 @@ export async function PUT(req: NextRequest) {
 
     // Try to save all fields first
     let { error } = await db.from('settings').update(filteredUpdates).eq('id', existing.id);
+    let aiUnrestrictedSkipped = false;
 
     // If it fails (possibly due to missing ai_unrestricted column), try without it
     if (error && filteredUpdates.ai_unrestricted !== undefined) {
       console.warn('Settings save failed, retrying without ai_unrestricted:', error.message);
+      aiUnrestrictedSkipped = true;
       delete filteredUpdates.ai_unrestricted;
       const retry = await db.from('settings').update(filteredUpdates).eq('id', existing.id);
       error = retry.error;
     }
 
     if (error) throw error;
+
+    // Return success with warning if ai_unrestricted was skipped
+    if (aiUnrestrictedSkipped) {
+      return NextResponse.json({
+        success: true,
+        warning: 'ai_unrestricted_not_saved',
+        message: 'Settings saved, but AI Unrestricted Mode requires adding the column to your database. Run: ALTER TABLE settings ADD COLUMN ai_unrestricted BOOLEAN DEFAULT false;'
+      });
+    }
 
     return NextResponse.json({ success: true });
   } catch (e: unknown) {

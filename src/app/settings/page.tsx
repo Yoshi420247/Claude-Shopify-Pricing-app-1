@@ -34,8 +34,11 @@ export default function SettingsPage() {
     }
   }
 
+  const [dbWarning, setDbWarning] = useState<string | null>(null);
+
   async function saveSettings() {
     setSaving(true);
+    setDbWarning(null);
     try {
       const res = await fetch('/api/settings', {
         method: 'PUT',
@@ -57,7 +60,12 @@ export default function SettingsPage() {
       });
       const data = await res.json();
       if (data.success) {
-        showToast('Settings saved', 'success');
+        if (data.warning === 'ai_unrestricted_not_saved') {
+          setDbWarning(data.message);
+          showToast('Settings saved (with warning)', 'warning');
+        } else {
+          showToast('Settings saved', 'success');
+        }
       } else {
         showToast(`Save failed: ${data.error}`, 'error');
       }
@@ -137,6 +145,23 @@ export default function SettingsPage() {
             )}
           </div>
         </div>
+
+        {/* Database Warning */}
+        {dbWarning && (
+          <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 mb-6">
+            <div className="flex items-start gap-3">
+              <span className="text-yellow-500 text-xl">⚠️</span>
+              <div>
+                <h4 className="font-medium text-yellow-400">Database Column Missing</h4>
+                <p className="text-sm text-yellow-200/80 mt-1">{dbWarning}</p>
+                <code className="block mt-2 bg-gray-800 text-green-400 p-2 rounded text-xs font-mono">
+                  ALTER TABLE settings ADD COLUMN ai_unrestricted BOOLEAN DEFAULT false;
+                </code>
+                <p className="text-xs text-gray-400 mt-2">Run this SQL in your Supabase SQL Editor, then refresh this page.</p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* AI Mode Selection */}
         <div className={`border rounded-lg mb-6 ${settings.ai_unrestricted ? 'bg-purple-900/30 border-purple-700' : 'bg-gray-800 border-gray-700'}`}>
