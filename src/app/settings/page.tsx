@@ -52,6 +52,7 @@ export default function SettingsPage() {
           product_niche: settings.product_niche,
           concurrency: settings.concurrency,
           openai_model: settings.openai_model,
+          ai_unrestricted: settings.ai_unrestricted,
         }),
       });
       const data = await res.json();
@@ -137,21 +138,62 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* OpenAI Model Selection */}
-        <div className="bg-gray-800 border border-gray-700 rounded-lg mb-6">
+        {/* AI Mode Selection */}
+        <div className={`border rounded-lg mb-6 ${settings.ai_unrestricted ? 'bg-purple-900/30 border-purple-700' : 'bg-gray-800 border-gray-700'}`}>
           <div className="px-4 py-3 border-b border-gray-700">
-            <h3 className="font-medium">AI Model</h3>
-            <p className="text-xs text-gray-500">GPT-5.2 with reasoning for maximum accuracy</p>
+            <h3 className="font-medium">AI Pricing Mode</h3>
+            <p className="text-xs text-gray-500">Choose how the AI calculates prices</p>
           </div>
-          <div className="p-4">
-            <select value={settings.openai_model || 'gpt-5.2'}
-              onChange={e => update('openai_model', e.target.value)}
-              className="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
-              <option value="gpt-5.2">GPT-5.2 (Recommended)</option>
-              <option value="gpt-5.2-pro">GPT-5.2 Pro (Highest accuracy, requires Pro plan)</option>
-              <option value="gpt-5.1">GPT-5.1</option>
-              <option value="gpt-4o">GPT-4o (Legacy)</option>
-            </select>
+          <div className="p-4 space-y-4">
+            {/* AI Unrestricted Mode Toggle */}
+            <div className={`p-4 rounded-lg border ${settings.ai_unrestricted ? 'bg-purple-900/40 border-purple-600' : 'bg-gray-700/50 border-gray-600'}`}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">🧠</span>
+                    <label className="font-medium text-white">AI Unrestricted Mode</label>
+                    {settings.ai_unrestricted && (
+                      <span className="px-2 py-0.5 bg-purple-600 text-purple-100 text-xs rounded font-medium">ACTIVE</span>
+                    )}
+                  </div>
+                  <p className="text-sm text-gray-400 mt-1">
+                    {settings.ai_unrestricted
+                      ? 'AI will give its best expert recommendation without any constraints'
+                      : 'Enable to let AI freely determine optimal price without guardrails'
+                    }
+                  </p>
+                </div>
+                <button onClick={() => update('ai_unrestricted', !settings.ai_unrestricted)}
+                  className={`relative w-14 h-7 rounded-full transition-colors ${settings.ai_unrestricted ? 'bg-purple-600' : 'bg-gray-600'}`}>
+                  <span className={`absolute top-1 w-5 h-5 bg-white rounded-full transition-transform ${settings.ai_unrestricted ? 'left-8' : 'left-1'}`} />
+                </button>
+              </div>
+              {settings.ai_unrestricted && (
+                <div className="mt-3 p-3 bg-purple-900/30 border border-purple-700 rounded text-sm">
+                  <p className="text-purple-300 font-medium">When enabled:</p>
+                  <ul className="text-purple-200/80 mt-1 space-y-1 text-xs">
+                    <li>• No minimum margin requirements</li>
+                    <li>• No MSRP ceiling</li>
+                    <li>• No competitor price limits</li>
+                    <li>• No price change restrictions</li>
+                    <li>• AI uses pure market expertise</li>
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            {/* Model Selection */}
+            <div>
+              <label className="block text-sm text-gray-400 mb-2">AI Model</label>
+              <select value={settings.openai_model || 'gpt-5.2'}
+                onChange={e => update('openai_model', e.target.value)}
+                className="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm w-full">
+                <option value="gpt-5.2">GPT-5.2 (Recommended)</option>
+                <option value="gpt-5.2-pro">GPT-5.2 Pro (Highest accuracy)</option>
+                <option value="gpt-5.1">GPT-5.1</option>
+                <option value="gpt-4o">GPT-4o (Legacy)</option>
+              </select>
+            </div>
           </div>
         </div>
 

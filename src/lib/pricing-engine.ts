@@ -238,12 +238,16 @@ ALGORITHMIC RECOMMENDATION (from pricing engine):
 - Psychological Factors: ${optimalPriceResult.psychologicalFactors.join(', ')}
 ${anchorStrategy.useAnchor ? `- MSRP Anchor: $${anchorStrategy.suggestedMsrp?.toFixed(2)} (${anchorStrategy.anchorDiscount.toFixed(0)}% perceived savings)` : ''}
 
-CONSTRAINTS (Must follow):
+${settings.ai_unrestricted ? `🧠 AI UNRESTRICTED MODE ACTIVE
+You have COMPLETE FREEDOM to recommend any price you believe is optimal.
+NO constraints apply - use your expert judgment to determine the best price.
+Focus purely on market positioning, profit optimization, and competitive strategy.
+Rounding style preference: ${settings.rounding_style}` : `CONSTRAINTS (Must follow):
 - Minimum margin: ${settings.min_margin}% OR $${settings.min_margin_dollars} (whichever is higher)
 - ${settings.respect_msrp ? 'MSRP ceiling: Never exceed MSRP' : 'MSRP: May exceed if market supports'}
 - Max ${settings.max_above}% above highest competitor
 - Max price change: +${settings.max_increase}% / -${settings.max_decrease}%
-- Rounding style: ${settings.rounding_style}
+- Rounding style: ${settings.rounding_style}`}
 
 YOUR TASK:
 Analyze all data, validate or adjust the algorithmic recommendation, and provide the OPTIMAL price that maximizes profit while maintaining competitive positioning.
@@ -450,11 +454,15 @@ EXPERT PRICING FRAMEWORK:
    - $25-100: Use .99 or round to $5
    - $100+: Use round numbers for premium feel
 
-5. CONSTRAINTS:
+${settings.ai_unrestricted ? `5. 🧠 AI UNRESTRICTED MODE:
+   - NO CONSTRAINTS - use pure expert judgment
+   - Recommend the price YOU believe is truly optimal
+   - Focus on market positioning and profit optimization
+   - Rounding preference: ${settings.rounding_style}` : `5. CONSTRAINTS:
    - Min margin: ${settings.min_margin}% or $${settings.min_margin_dollars}
    - ${settings.respect_msrp ? 'Must not exceed MSRP' : 'May exceed MSRP if justified'}
    - Max change: +${settings.max_increase}% / -${settings.max_decrease}%
-   - Rounding: ${settings.rounding_style}
+   - Rounding: ${settings.rounding_style}`}
 
 YOUR MISSION:
 Synthesize ALL available information to determine the OPTIMAL price. Be confident - you have enough data to make an informed decision.

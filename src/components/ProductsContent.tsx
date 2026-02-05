@@ -5,12 +5,23 @@ import { useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { useToast } from '@/components/Toast';
 import ProductModal from '@/components/ProductModal';
-import type { Product, Variant, Analysis } from '@/types';
+import type { Product, Variant, Analysis, Settings } from '@/types';
 
 interface VariantRow extends Variant {
   product: Product;
   analysis: Analysis | null;
 }
+
+const defaultSettings: Partial<Settings> = {
+  min_margin: 20,
+  min_margin_dollars: 3,
+  respect_msrp: true,
+  max_above: 5,
+  max_increase: 10,
+  max_decrease: 15,
+  rounding_style: 'psychological',
+  ai_unrestricted: false,
+};
 
 export default function ProductsContent() {
   const { showToast } = useToast();
@@ -29,8 +40,25 @@ export default function ProductsContent() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [analyzing, setAnalyzing] = useState<Set<string>>(new Set());
   const [modalVariant, setModalVariant] = useState<VariantRow | null>(null);
+  const [settings, setSettings] = useState<Partial<Settings>>(defaultSettings);
 
   const vendors = [...new Set(rows.map(r => r.product.vendor).filter(Boolean))] as string[];
+
+  // Load settings
+  useEffect(() => {
+    async function loadSettings() {
+      try {
+        const res = await fetch('/api/settings');
+        const data = await res.json();
+        if (data.success && data.settings) {
+          setSettings({ ...defaultSettings, ...data.settings });
+        }
+      } catch (e) {
+        console.error('Settings load error:', e);
+      }
+    }
+    loadSettings();
+  }, []);
 
   // Load all products + variants + analyses
   const loadData = useCallback(async () => {
@@ -489,6 +517,7 @@ export default function ProductsContent() {
           product={modalVariant.product}
           variant={modalVariant}
           analysis={modalVariant.analysis}
+          settings={settings}
           onClose={() => setModalVariant(null)}
           onAccept={acceptSuggestion}
           onReanalyze={analyzeVariant}
