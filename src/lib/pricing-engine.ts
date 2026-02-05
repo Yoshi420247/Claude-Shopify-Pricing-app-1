@@ -1,7 +1,7 @@
-// Core AI pricing analysis pipeline using GPT-5.2 with reasoning
+// Core AI pricing analysis pipeline using GPT-5.2 or Claude Opus 4.5
 // Handles: product identification → competitor search → AI pricing → deliberation
 
-import { chatCompletion, parseAIJson } from './openai';
+import { chatCompletion, parseAIJson, type AIModel } from './ai';
 import { searchCompetitors, type CompetitorSearchResult } from './competitors';
 import { createServerClient } from './supabase';
 import type {
@@ -19,7 +19,7 @@ const WHOLESALE_DOMAINS_SHORT = [
 export async function identifyProduct(
   product: Product,
   variant: Variant,
-  model: string
+  model: AIModel
 ): Promise<ProductIdentity> {
   const descText = product.description
     || (product.description_html || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -108,7 +108,7 @@ export async function analyzePricing(
   competitorData: CompetitorSearchResult,
   identity: ProductIdentity,
   settings: Settings,
-  model: string
+  model: AIModel
 ): Promise<AnalysisResult> {
   const cost = variant.cost || 0;
   const currentPrice = variant.price;
@@ -237,7 +237,7 @@ export async function deliberatePricing(
   initialAnalysis: AnalysisResult,
   identity: ProductIdentity,
   settings: Settings,
-  model: string
+  model: AIModel
 ): Promise<DeliberationResult> {
   const cost = variant.cost || 0;
   const currentPrice = variant.price;
@@ -329,7 +329,7 @@ async function reflectAndRetry(
   product: Product,
   identity: ProductIdentity,
   failedQueries: string[],
-  model: string
+  model: AIModel
 ): Promise<string[]> {
   const descText = (product.description || '').substring(0, 300);
 
@@ -396,7 +396,12 @@ export async function runFullAnalysis(
   wasReflectionRetried: boolean;
   error: string | null;
 }> {
-  const model = settings.openai_model || 'gpt-5.2';
+  // Get model from settings, default to gpt-5.2
+  const modelSetting = settings.openai_model || 'gpt-5.2';
+  // Map old model names to new AIModel type
+  const model: AIModel = modelSetting.includes('claude') || modelSetting.includes('opus')
+    ? 'claude-opus-4.5'
+    : 'gpt-5.2';
 
   try {
     // Step 1: Identify product

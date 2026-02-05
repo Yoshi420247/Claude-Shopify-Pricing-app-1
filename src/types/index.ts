@@ -7,7 +7,9 @@ export interface Settings {
   shopify_store: string;
   shopify_token: string | null;
   openai_key: string | null;
-  openai_model: string;
+  // AI model: 'gpt-5.2' (OpenAI) or 'claude-opus-4.5' (Anthropic)
+  openai_model: 'gpt-5.2' | 'claude-opus-4.5' | string;
+  anthropic_key: string | null;
   brave_key: string | null;
   min_margin: number;
   min_margin_dollars: number;
