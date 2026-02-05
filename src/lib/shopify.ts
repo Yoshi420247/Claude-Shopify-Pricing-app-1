@@ -62,9 +62,18 @@ async function shopifyGraphQL(query: string, variables: Record<string, unknown> 
   return result.data;
 }
 
+// Progress callback type for streaming sync status
+export type SyncProgressCallback = (event: {
+  phase: 'fetching' | 'saving' | 'complete' | 'error';
+  message: string;
+  productsFound?: number;
+  page?: number;
+}) => void;
+
 // Fetch ALL products with variants and costs via GraphQL pagination
-export async function fetchAllProducts() {
+export async function fetchAllProducts(onProgress?: SyncProgressCallback) {
   // Query with cost data (requires read_inventory scope)
+  // Using variants(first: 250) — Shopify's max per connection
   const queryWithCost = `
     query getProductsWithCost($cursor: String) {
       products(first: 100, after: $cursor) {
@@ -81,7 +90,8 @@ export async function fetchAllProducts() {
             tags
             status
             featuredImage { url }
-            variants(first: 100) {
+            variants(first: 250) {
+              pageInfo { hasNextPage }
               edges {
                 node {
                   id
@@ -119,7 +129,8 @@ export async function fetchAllProducts() {
             tags
             status
             featuredImage { url }
-            variants(first: 100) {
+            variants(first: 250) {
+              pageInfo { hasNextPage }
               edges {
                 node {
                   id
@@ -144,33 +155,73 @@ export async function fetchAllProducts() {
 
   while (hasNextPage) {
     pageCount++;
-    try {
-      const query = useFallback ? queryWithoutCost : queryWithCost;
-      const data = await shopifyGraphQL(query, { cursor });
-      const products = data.products;
 
-      for (const edge of products.edges) {
-        allProducts.push(edge.node);
-      }
+    // Retry logic: up to 3 attempts per page with exponential backoff
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const query = useFallback ? queryWithoutCost : queryWithCost;
+        const data = await shopifyGraphQL(query, { cursor });
+        const products = data.products;
 
-      hasNextPage = products.pageInfo.hasNextPage;
-      cursor = products.pageInfo.endCursor;
+        for (const edge of products.edges) {
+          // Warn if a product has more variants than we fetched
+          if (edge.node.variants?.pageInfo?.hasNextPage) {
+            console.warn(`Product "${edge.node.title}" has >250 variants — only first 250 imported`);
+          }
+          allProducts.push(edge.node);
+        }
 
-      // Log progress every 5 pages
-      if (pageCount % 5 === 0) {
-        console.log(`Shopify sync progress: ${allProducts.length} products fetched (page ${pageCount})...`);
+        hasNextPage = products.pageInfo.hasNextPage;
+        cursor = products.pageInfo.endCursor;
+        lastError = null;
+        break; // Success — exit retry loop
+      } catch (e: unknown) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+        const message = lastError.message;
+
+        // First page with inventory query error → switch to fallback
+        if (pageCount === 1 && attempt === 1 && !useFallback) {
+          console.warn(`Error with inventory query (${message.slice(0, 150)}), retrying without cost data`);
+          useFallback = true;
+          continue;
+        }
+
+        // Throttled by Shopify — wait and retry
+        if (message.includes('429') || message.includes('Throttled')) {
+          const wait = attempt * 2000; // 2s, 4s, 6s
+          console.warn(`Shopify rate limit on page ${pageCount}, waiting ${wait}ms (attempt ${attempt}/3)`);
+          onProgress?.({ phase: 'fetching', message: `Rate limited, retrying in ${wait / 1000}s...`, productsFound: allProducts.length, page: pageCount });
+          await new Promise(r => setTimeout(r, wait));
+          continue;
+        }
+
+        // Other error — wait briefly and retry
+        if (attempt < 3) {
+          const wait = attempt * 1500;
+          console.warn(`Shopify error on page ${pageCount} (attempt ${attempt}/3): ${message.slice(0, 100)}`);
+          await new Promise(r => setTimeout(r, wait));
+          continue;
+        }
       }
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : String(e);
-      // If we get ANY error on first page with inventory query, try fallback query without cost data
-      // This handles scope issues, permission errors, or any GraphQL field errors
-      if (pageCount === 1 && !useFallback) {
-        console.warn(`Error with inventory query (${message.slice(0, 150)}), retrying without cost data`);
-        useFallback = true;
-        continue;
-      }
-      console.error(`Shopify sync error on page ${pageCount}: ${message}`);
-      throw e;
+    }
+
+    // If all retries failed, throw
+    if (lastError) {
+      console.error(`Shopify sync failed on page ${pageCount} after 3 attempts: ${lastError.message}`);
+      throw lastError;
+    }
+
+    // Progress reporting
+    if (pageCount % 2 === 0 || !hasNextPage) {
+      const msg = `Fetched ${allProducts.length} products (page ${pageCount})...`;
+      console.log(msg);
+      onProgress?.({ phase: 'fetching', message: msg, productsFound: allProducts.length, page: pageCount });
+    }
+
+    // Rate limiting: small delay between pages to avoid Shopify throttling
+    if (hasNextPage) {
+      await new Promise(r => setTimeout(r, 250));
     }
 
     if (pageCount > 200) {
@@ -179,7 +230,7 @@ export async function fetchAllProducts() {
     }
   }
 
-  console.log(`✓ Shopify sync complete: ${allProducts.length} products in ${pageCount} pages (usedFallback: ${useFallback})`);
+  console.log(`Shopify sync complete: ${allProducts.length} products in ${pageCount} pages (usedFallback: ${useFallback})`);
   return allProducts;
 }
 
@@ -259,6 +310,7 @@ interface ShopifyProductNode {
   status: string;
   featuredImage: { url: string } | null;
   variants: {
+    pageInfo?: { hasNextPage: boolean };
     edges: {
       node: {
         id: string;

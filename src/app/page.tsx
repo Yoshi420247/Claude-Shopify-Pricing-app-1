@@ -17,6 +17,7 @@ export default function DashboardPage() {
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
   const [activity, setActivity] = useState<ActivityLog[]>([]);
   const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
   const [batchRunning, setBatchRunning] = useState(false);
@@ -56,20 +57,59 @@ export default function DashboardPage() {
 
   async function syncProducts() {
     setSyncing(true);
-    showToast('Syncing products from Shopify...', 'info');
+    setSyncStatus('Connecting to Shopify...');
     try {
       const res = await fetch('/api/shopify/sync', { method: 'POST' });
-      const data = await res.json();
-      if (data.success) {
-        showToast(`Synced ${data.productsCount} products, ${data.variantsCount} variants (${data.costsLoaded} with costs)`, 'success');
-        loadDashboard();
-      } else {
-        showToast(`Sync failed: ${data.error}`, 'error');
+
+      if (!res.body) {
+        showToast('Sync failed: no response stream', 'error');
+        setSyncing(false);
+        setSyncStatus('');
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Parse SSE events from buffer
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const event = JSON.parse(line.slice(6));
+
+              if (event.phase === 'fetching' || event.phase === 'saving') {
+                setSyncStatus(event.message || 'Working...');
+              } else if (event.phase === 'complete') {
+                if (event.errors && event.errors.length > 0) {
+                  showToast(`${event.message}`, 'warning');
+                } else {
+                  showToast(event.message || `Synced ${event.productsCount} products`, 'success');
+                }
+                loadDashboard();
+              } else if (event.phase === 'error') {
+                showToast(`Sync failed: ${event.message}`, 'error');
+              }
+            } catch {
+              // Skip malformed events
+            }
+          }
+        }
       }
     } catch (e) {
       showToast('Sync failed: network error', 'error');
     } finally {
       setSyncing(false);
+      setSyncStatus('');
     }
   }
 
@@ -186,14 +226,19 @@ export default function DashboardPage() {
             className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-2 rounded text-sm flex items-center gap-2"
           >
             {syncing ? (
-              <div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
+              <>
+                <div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
+                <span className="max-w-[250px] truncate">{syncStatus || 'Syncing...'}</span>
+              </>
             ) : (
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
+              <>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Sync from Shopify
+              </>
             )}
-            Sync from Shopify
           </button>
         </div>
 
