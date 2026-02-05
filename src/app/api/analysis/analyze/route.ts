@@ -8,7 +8,7 @@ export const maxDuration = 300; // 5 minutes - analysis involves multiple API ca
 
 export async function POST(req: NextRequest) {
   try {
-    const { productId, variantId } = await req.json();
+    const { productId, variantId, ai_unrestricted } = await req.json();
 
     if (!productId || !variantId) {
       return NextResponse.json({ success: false, error: 'productId and variantId required' }, { status: 400 });
@@ -41,6 +41,11 @@ export async function POST(req: NextRequest) {
     const settings = settingsRows?.[0] as Settings | undefined;
     if (!settings) {
       return NextResponse.json({ success: false, error: 'Settings not configured' }, { status: 400 });
+    }
+
+    // Override ai_unrestricted from client (stored in localStorage, may not be in DB)
+    if (typeof ai_unrestricted === 'boolean') {
+      settings.ai_unrestricted = ai_unrestricted;
     }
 
     // Run full analysis pipeline
