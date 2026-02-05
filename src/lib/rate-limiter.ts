@@ -107,8 +107,8 @@ class RateLimiter {
 
 // Singleton instances for different services
 export const braveRateLimiter = new RateLimiter({
-  requestsPerSecond: 0.5, // 1 request per 2 seconds (conservative)
-  maxPerMinute: 15, // Stay well under the limit
+  requestsPerSecond: 0.33, // 1 request per 3 seconds — Brave free tier is strict
+  maxPerMinute: 10,        // Well under Brave's limit to avoid 429s during concurrent analyses
 });
 
 export const openaiRateLimiter = new RateLimiter({

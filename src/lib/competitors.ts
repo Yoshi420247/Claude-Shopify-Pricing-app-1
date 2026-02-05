@@ -265,7 +265,7 @@ export async function searchCompetitors(
           }));
         } else {
           // Rate-limited search with automatic retry on 429
-          results = await braveRateLimiter.execute(() => braveSearch(query, 12), 3);
+          results = await braveRateLimiter.execute(() => braveSearch(query, 12), 5);
 
           // Cache the results
           searchCache.set(query, results.map(r => ({
