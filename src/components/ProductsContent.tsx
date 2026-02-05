@@ -21,6 +21,7 @@ export default function ProductsContent() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState(searchParams.get('status') || '');
+  const [productStatusFilter, setProductStatusFilter] = useState(''); // ACTIVE, DRAFT, etc.
   const [vendorFilter, setVendorFilter] = useState('');
   const [sortBy, setSortBy] = useState('name-asc');
   const [page, setPage] = useState(1);
@@ -86,6 +87,10 @@ export default function ProductsContent() {
       result = result.filter(r => r.product.vendor === vendorFilter);
     }
 
+    if (productStatusFilter) {
+      result = result.filter(r => r.product.status === productStatusFilter);
+    }
+
     if (statusFilter) {
       result = result.filter(r => {
         const a = r.analysis;
@@ -125,7 +130,7 @@ export default function ProductsContent() {
 
     setFiltered(result);
     setPage(1);
-  }, [rows, search, statusFilter, vendorFilter, sortBy]);
+  }, [rows, search, statusFilter, productStatusFilter, vendorFilter, sortBy]);
 
   const totalPages = Math.ceil(filtered.length / pageSize);
   const pageRows = filtered.slice((page - 1) * pageSize, page * pageSize);
@@ -274,6 +279,13 @@ export default function ProductsContent() {
           <option value="negative_margin">Negative Margin</option>
           <option value="below_floor">Below Floor</option>
           <option value="missing_cost">Missing Cost</option>
+        </select>
+        <select value={productStatusFilter} onChange={e => setProductStatusFilter(e.target.value)}
+          className="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">
+          <option value="">All Products</option>
+          <option value="active">Active Only</option>
+          <option value="draft">Draft Only</option>
+          <option value="archived">Archived Only</option>
         </select>
         <select value={vendorFilter} onChange={e => setVendorFilter(e.target.value)}
           className="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm">

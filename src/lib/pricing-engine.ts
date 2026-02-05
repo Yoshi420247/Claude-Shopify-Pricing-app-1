@@ -316,7 +316,7 @@ Respond in JSON:
     ],
     maxTokens: 2000,
     jsonMode: true,
-    reasoningEffort: 'high',
+    reasoningEffort: 'xhigh', // Maximum reasoning for deep deliberation
   });
 
   return parseAIJson<DeliberationResult>(raw);
