@@ -261,6 +261,7 @@ export async function searchCompetitors(
             url: r.url,
             title: r.title,
             description: r.description || '',
+            searchQuery: query,
           }));
         } else {
           // Rate-limited search with automatic retry on 429
