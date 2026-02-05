@@ -63,25 +63,93 @@ export default function ProductsContent() {
   // Load all products + variants + analyses
   const loadData = useCallback(async () => {
     try {
-      const { data: products } = await supabase
-        .from('products')
-        .select('*')
-        .order('title');
+      // Fetch products with no limit (handle large catalogs)
+      // Supabase default is 1000, so we need to paginate for larger stores
+      let allProducts: Product[] = [];
+      let page = 0;
+      const pageSize = 1000;
 
-      const { data: variants } = await supabase
-        .from('variants')
-        .select('*');
+      while (true) {
+        const { data: products, error } = await supabase
+          .from('products')
+          .select('*')
+          .order('title')
+          .range(page * pageSize, (page + 1) * pageSize - 1);
 
-      const { data: analyses } = await supabase
-        .from('analyses')
-        .select('*');
+        if (error) {
+          console.error('Products fetch error:', error);
+          break;
+        }
 
-      if (!products || !variants) return;
+        if (!products || products.length === 0) break;
+        allProducts = [...allProducts, ...(products as Product[])];
 
-      const productMap = new Map(products.map(p => [p.id, p as Product]));
-      const analysisMap = new Map((analyses || []).map(a => [a.variant_id, a as Analysis]));
+        if (products.length < pageSize) break; // Last page
+        page++;
 
-      const variantRows: VariantRow[] = variants.map(v => ({
+        if (page > 50) { // Safety limit: 50,000 products max
+          console.warn('Hit product pagination safety limit');
+          break;
+        }
+      }
+
+      // Fetch all variants (also paginated)
+      let allVariants: Variant[] = [];
+      page = 0;
+
+      while (true) {
+        const { data: variants, error } = await supabase
+          .from('variants')
+          .select('*')
+          .range(page * pageSize, (page + 1) * pageSize - 1);
+
+        if (error) {
+          console.error('Variants fetch error:', error);
+          break;
+        }
+
+        if (!variants || variants.length === 0) break;
+        allVariants = [...allVariants, ...(variants as Variant[])];
+
+        if (variants.length < pageSize) break;
+        page++;
+
+        if (page > 50) {
+          console.warn('Hit variant pagination safety limit');
+          break;
+        }
+      }
+
+      // Fetch all analyses (also paginated)
+      let allAnalyses: Analysis[] = [];
+      page = 0;
+
+      while (true) {
+        const { data: analyses, error } = await supabase
+          .from('analyses')
+          .select('*')
+          .range(page * pageSize, (page + 1) * pageSize - 1);
+
+        if (error) {
+          console.error('Analyses fetch error:', error);
+          break;
+        }
+
+        if (!analyses || analyses.length === 0) break;
+        allAnalyses = [...allAnalyses, ...(analyses as Analysis[])];
+
+        if (analyses.length < pageSize) break;
+        page++;
+
+        if (page > 50) break;
+      }
+
+      console.log(`Loaded ${allProducts.length} products, ${allVariants.length} variants, ${allAnalyses.length} analyses`);
+
+      const productMap = new Map(allProducts.map(p => [p.id, p]));
+      const analysisMap = new Map(allAnalyses.map(a => [a.variant_id, a]));
+
+      const variantRows: VariantRow[] = allVariants.map(v => ({
         ...(v as Variant),
         product: productMap.get(v.product_id) as Product,
         analysis: analysisMap.get(v.id) || null,

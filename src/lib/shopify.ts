@@ -155,6 +155,11 @@ export async function fetchAllProducts() {
 
       hasNextPage = products.pageInfo.hasNextPage;
       cursor = products.pageInfo.endCursor;
+
+      // Log progress every 5 pages
+      if (pageCount % 5 === 0) {
+        console.log(`Shopify sync progress: ${allProducts.length} products fetched (page ${pageCount})...`);
+      }
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
       // If we get ANY error on first page with inventory query, try fallback query without cost data
@@ -164,16 +169,17 @@ export async function fetchAllProducts() {
         useFallback = true;
         continue;
       }
+      console.error(`Shopify sync error on page ${pageCount}: ${message}`);
       throw e;
     }
 
     if (pageCount > 200) {
-      console.warn('Hit Shopify pagination safety limit at 200 pages');
+      console.warn('Hit Shopify pagination safety limit at 200 pages (20,000 products max)');
       break;
     }
   }
 
-  console.log(`Fetched ${allProducts.length} products in ${pageCount} pages (usedFallback: ${useFallback})`);
+  console.log(`✓ Shopify sync complete: ${allProducts.length} products in ${pageCount} pages (usedFallback: ${useFallback})`);
   return allProducts;
 }
 
