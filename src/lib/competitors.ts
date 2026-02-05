@@ -1,6 +1,9 @@
 // Server-side competitor price research — searches web, fetches pages, extracts prices
+// Now with smart caching and rate limiting to handle large batches efficiently
 
 import { braveSearch, type BraveSearchResult } from './brave';
+import { braveRateLimiter } from './rate-limiter';
+import { searchCache } from './search-cache';
 import type { ProductIdentity } from '@/types';
 
 // Known wholesale/distributor domains to always exclude
@@ -248,7 +251,28 @@ export async function searchCompetitors(
 
     for (const query of queries) {
       try {
-        const results = await braveSearch(query, 12);
+        // Check cache first
+        const cached = searchCache.get(query);
+        let results: BraveSearchResult[];
+
+        if (cached) {
+          // Use cached results
+          results = cached.results.map(r => ({
+            url: r.url,
+            title: r.title,
+            description: r.description || '',
+          }));
+        } else {
+          // Rate-limited search with automatic retry on 429
+          results = await braveRateLimiter.execute(() => braveSearch(query, 12), 3);
+
+          // Cache the results
+          searchCache.set(query, results.map(r => ({
+            url: r.url,
+            title: r.title,
+            description: r.description,
+          })));
+        }
 
         for (const result of results) {
           if (seenUrls.has(result.url)) continue;
