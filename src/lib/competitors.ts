@@ -43,6 +43,9 @@ export interface CompetitorSearchResult {
 }
 
 // Build search queries based on product identity and broadening level
+// IMPORTANT: Keep query count low — Brave free tier is strict (10 req/min).
+// With 3 concurrent analyses, total Brave calls = 3 × queries_per_analysis.
+// Target: 3-4 queries per level, 2-3 levels = 6-12 queries per analysis max.
 function buildQueries(
   product: { title: string; vendor: string | null; productType: string | null },
   identity: ProductIdentity,
@@ -56,32 +59,27 @@ function buildQueries(
   const cleanBrand = brand.replace(/[^\w\s-]/g, ' ').trim();
 
   if (level === 0) {
-    return [
-      ...(identity.searchQueries || []),
+    // Most specific: use AI-generated queries + product name
+    const queries = [
+      ...(identity.searchQueries || []).slice(0, 2), // AI-generated are best, take top 2
       `${cleanName} price buy`,
       `${cleanBrand} ${productType} price`.trim(),
-      `${cleanName} smoke shop`,
-      `${productType} ${cleanBrand} buy online`.trim(),
-      `${cleanName} head shop`,
-      `buy ${cleanName} online`,
-      `${productType} for sale price`,
     ].filter(Boolean);
+    // Deduplicate
+    return [...new Set(queries)].slice(0, 4);
   }
 
   if (level === 1) {
+    // Broader: product type + shop terms
     const searchType = productType || productName || 'glass accessory';
     return [
       `${searchType} smoke shop price`,
-      `${searchType} head shop buy`,
-      `${searchType} online store`,
-      `${searchType} retail`,
-      originTier === 'heady' ? `heady ${searchType} price` : `${searchType} price`,
-      `buy ${searchType} online`,
-      `${searchType} for sale`,
+      `${searchType} buy online`,
+      originTier === 'heady' ? `heady ${searchType} price` : `${searchType} retail price`,
     ].filter(Boolean);
   }
 
-  // Level 2+: Very broad queries
+  // Level 2+: Very broad category queries
   const typeLC = (productType || productName || '').toLowerCase();
   const cat = typeLC.includes('pendant') ? 'glass pendant jewelry'
     : typeLC.includes('tool') ? 'dab tool dabber'
@@ -98,16 +96,10 @@ function buildQueries(
     : productType || 'smoke shop glass';
 
   return [
-    `${cat} for sale`,
-    `${cat} shop price`,
-    `buy ${cat} online store`,
-    `${cat} retail price`,
-    `site:smokecartel.com ${cat}`,
-    `site:dankgeek.com ${cat}`,
+    `${cat} for sale price`,
+    `site:smokea.com ${cat}`,
     `site:grasscity.com ${cat}`,
-    originTier === 'heady' ? 'heady glass art for sale' : `${cat} smoke shop`,
-    'smoke shop products price',
-  ].filter(Boolean);
+  ];
 }
 
 // Extract price from text snippet
@@ -246,7 +238,7 @@ export async function searchCompetitors(
   const seenPrices = new Set<number>();
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const queries = buildQueries(product, identity, attempt).slice(0, 10);
+    const queries = buildQueries(product, identity, attempt);
     allQueries.push(...queries);
 
     for (const query of queries) {
@@ -312,9 +304,13 @@ export async function searchCompetitors(
       } catch (e) {
         console.error(`Search query failed: "${query}":`, e);
       }
+
+      // If we found prices from this query, skip remaining queries at this level
+      // This saves Brave API calls — we can always broaden in the next level
+      if (allCompetitors.length >= 2) break;
     }
 
-    // If we have 2+ competitor prices, we have enough
+    // If we have 2+ competitor prices, we have enough — stop broadening
     if (allCompetitors.length >= 2) break;
   }
 
@@ -326,7 +322,7 @@ export async function searchCompetitors(
         return RETAIL_SMOKE_SHOPS.some(shop => d.includes(shop));
       } catch { return false; }
     })
-    .slice(0, 8);
+    .slice(0, 3);
 
   for (const result of knownWithoutPrice) {
     try {
