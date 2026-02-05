@@ -220,9 +220,9 @@ Instructions:
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
     ],
-    maxTokens: 4000,
+    maxTokens: 6000,
     jsonMode: true,
-    reasoningEffort: 'medium', // Use medium to balance quality vs speed
+    reasoningEffort: 'low', // Use low to minimize response time
   });
 
   return parseAIJson<AnalysisResult>(raw);
@@ -314,9 +314,9 @@ Respond in JSON:
       },
       { role: 'user', content: messageContent as never },
     ],
-    maxTokens: 3000,
+    maxTokens: 5000,
     jsonMode: true,
-    reasoningEffort: 'high', // Use high instead of xhigh to reduce time
+    reasoningEffort: 'medium', // Balance quality vs speed
   });
 
   return parseAIJson<DeliberationResult>(raw);
