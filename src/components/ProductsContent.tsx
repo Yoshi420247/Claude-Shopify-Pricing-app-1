@@ -213,7 +213,7 @@ export default function ProductsContent() {
           case 'applied': return a?.applied;
           case 'failed': return a?.error;
           case 'negative_margin': return margin !== null && margin < 0;
-          case 'below_floor': return margin !== null && margin >= 0 && margin < 20;
+          case 'below_floor': return margin !== null && margin >= 0 && margin < (settings.min_margin ?? 20);
           case 'missing_cost': return !r.cost;
           default: return true;
         }
@@ -306,7 +306,7 @@ export default function ProductsContent() {
     if (bulkProgress) return; // Already running
     cancelBulkRef.current = false;
 
-    const concurrency = Math.min(Math.max(settings.concurrency || 3, 1), 5); // 1-5 concurrent
+    const concurrency = Math.min(Math.max(settings.concurrency || 3, 1), 10); // 1-10 concurrent
 
     setBulkProgress({
       total: items.length,

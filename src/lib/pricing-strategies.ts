@@ -369,8 +369,9 @@ export function optimizeForProfit(
     }
   }
 
-  // Apply minimum margin constraint
-  const minMarginPrice = cost * (1 + settings.min_margin / 100);
+  // Apply minimum margin constraint using gross margin formula: margin = (price-cost)/price
+  // So: price = cost / (1 - margin/100), e.g., 20% margin on $10 cost = $12.50
+  const minMarginPrice = settings.min_margin < 100 ? cost / (1 - settings.min_margin / 100) : cost * 10;
   const minDollarPrice = cost + settings.min_margin_dollars;
   const absoluteFloor = Math.max(minMarginPrice, minDollarPrice);
 
@@ -378,9 +379,10 @@ export function optimizeForProfit(
     optimalPrice = absoluteFloor;
   }
 
-  // Calculate final profit metrics
+  // Calculate final profit metrics using gross margin: (price-cost)/price
+  // This matches the dashboard and product table margin display
   const profitDollars = optimalPrice - cost;
-  const profitMargin = cost > 0 ? (profitDollars / cost) * 100 : 0;
+  const profitMargin = cost > 0 && optimalPrice > 0 ? ((optimalPrice - cost) / optimalPrice) * 100 : 0;
 
   const reasoning = cost > 0
     ? `${tier} tier with ${markup.optimal}x optimal markup. Cost $${cost.toFixed(2)} × ${(optimalPrice / cost).toFixed(1)}x = $${optimalPrice.toFixed(2)}. Margin: ${profitMargin.toFixed(0)}%.`
@@ -581,9 +583,9 @@ export function calculateOptimalPrice(context: PricingContext): OptimalPrice {
   if (isUnrestricted) {
     reasoning.push(`AI UNRESTRICTED MODE: Skipping all pricing constraints for best expert recommendation.`);
   } else {
-    // Min margin
+    // Min margin using gross margin: price = cost / (1 - margin/100)
     const absoluteFloor = Math.max(
-      cost * (1 + settings.min_margin / 100),
+      settings.min_margin < 100 ? cost / (1 - settings.min_margin / 100) : cost * 10,
       cost + settings.min_margin_dollars
     );
     if (targetPrice < absoluteFloor) {
@@ -623,9 +625,9 @@ export function calculateOptimalPrice(context: PricingContext): OptimalPrice {
   const finalPrice = psychological.price;
   reasoning.push(`Psychological pricing: $${finalPrice.toFixed(2)} (${psychological.factors.join(', ')}).`);
 
-  // Step 8: Final calculations
+  // Step 8: Final calculations (gross margin: (price-cost)/price)
   const finalProfitDollars = finalPrice - cost;
-  const finalProfitMargin = cost > 0 ? (finalProfitDollars / cost) * 100 : 0;
+  const finalProfitMargin = cost > 0 && finalPrice > 0 ? ((finalPrice - cost) / finalPrice) * 100 : 0;
 
   // Determine confidence
   let confidence: 'high' | 'medium' | 'low' = 'medium';

@@ -34,7 +34,7 @@ export async function POST(request: Request) {
       max_above: 20,
       max_increase: 30,
       max_decrease: 20,
-      rounding_style: 'x.99',
+      rounding_style: 'psychological',
       respect_msrp: true,
       openai_model: 'gpt-5.2',
       product_niche: 'smoke shop, heady glass, dab tools',

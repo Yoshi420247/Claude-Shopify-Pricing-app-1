@@ -34,12 +34,7 @@ export default function DashboardPage() {
     }
   }, []);
 
-  useEffect(() => {
-    loadDashboard();
-    loadQueueStats();
-  }, [loadQueueStats]);
-
-  async function loadDashboard() {
+  const loadDashboard = useCallback(async () => {
     try {
       const res = await fetch('/api/dashboard');
       const data = await res.json();
@@ -52,7 +47,12 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    loadDashboard();
+    loadQueueStats();
+  }, [loadDashboard, loadQueueStats]);
 
   async function syncProducts() {
     setSyncing(true);

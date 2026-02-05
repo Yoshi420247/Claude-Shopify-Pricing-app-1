@@ -45,6 +45,7 @@ export default function SettingsPage() {
   async function saveSettings() {
     setSaving(true);
     setDbWarning(null);
+    // NOTE: dbWarning state is used below to display migration instructions
     try {
       // Always persist ai_unrestricted to localStorage (works even without DB column)
       localStorage.setItem('ai_unrestricted', String(!!settings.ai_unrestricted));
@@ -69,7 +70,9 @@ export default function SettingsPage() {
       });
       const data = await res.json();
       if (data.success) {
-        // Even if DB didn't save ai_unrestricted, localStorage has it
+        if (data.warning === 'ai_unrestricted_not_saved') {
+          setDbWarning(data.message);
+        }
         showToast('Settings saved', 'success');
       } else {
         showToast(`Save failed: ${data.error}`, 'error');
@@ -337,13 +340,21 @@ export default function SettingsPage() {
           <div className="p-4">
             <div className="flex justify-between text-sm mb-1">
               <label className="text-gray-400">Parallel Operations</label>
-              <span className="text-white">{settings.concurrency ?? 20}</span>
+              <span className="text-white">{settings.concurrency ?? 3}</span>
             </div>
-            <input type="range" min={1} max={30} value={settings.concurrency ?? 20}
+            <input type="range" min={1} max={10} value={settings.concurrency ?? 3}
               onChange={e => update('concurrency', Number(e.target.value))}
               className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer" />
+            <p className="text-xs text-gray-500 mt-1">Controls how many products are analyzed simultaneously (1-10)</p>
           </div>
         </div>
+
+        {dbWarning && (
+          <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 mb-6">
+            <h4 className="text-sm font-medium text-yellow-400 mb-1">Database Migration Needed</h4>
+            <p className="text-xs text-gray-300">{dbWarning}</p>
+          </div>
+        )}
 
         <button onClick={saveSettings} disabled={saving}
           className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-6 py-2 rounded text-sm font-medium">

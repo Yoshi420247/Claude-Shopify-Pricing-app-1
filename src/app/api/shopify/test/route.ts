@@ -8,10 +8,11 @@ export async function GET() {
 
   if (!store || !token) {
     return NextResponse.json({
+      success: false,
       error: 'Missing env vars',
       hasStore: !!store,
       hasToken: !!token,
-    });
+    }, { status: 400 });
   }
 
   const url = `https://${store}.myshopify.com/admin/api/2024-10/graphql.json`;

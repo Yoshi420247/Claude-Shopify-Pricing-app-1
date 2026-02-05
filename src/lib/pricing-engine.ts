@@ -16,10 +16,6 @@ import type {
   AnalysisResult, DeliberationResult,
 } from '@/types';
 
-const WHOLESALE_DOMAINS_SHORT = [
-  'alibaba.com', 'dhgate.com', 'made-in-china.com', 'wholesalecentral.com',
-];
-
 // ============================================================================
 // Step 1: AI Product Identification
 // ============================================================================
@@ -299,7 +295,7 @@ PRODUCT DETAILS:
 - Vendor/Brand: ${product.vendor || 'Unknown'}
 - Product Type: ${product.product_type || 'Unknown'}
 - Current Price: $${currentPrice.toFixed(2)}
-- Cost: ${cost > 0 ? '$' + cost.toFixed(2) + ` (current margin: ${((currentPrice - cost) / cost * 100).toFixed(1)}%)` : 'UNKNOWN - use tier-based estimation'}
+- Cost: ${cost > 0 ? '$' + cost.toFixed(2) + ` (current gross margin: ${((currentPrice - cost) / currentPrice * 100).toFixed(1)}%)` : 'UNKNOWN - use tier-based estimation'}
 ${msrp ? `- MSRP/Compare-At: $${msrp.toFixed(2)}` : ''}
 ${descText ? `\nDescription:\n${descText}` : ''}
 
