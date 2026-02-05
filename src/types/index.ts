@@ -19,6 +19,8 @@ export interface Settings {
   rounding_style: 'psychological' | 'clean' | 'none';
   product_niche: string | null;
   concurrency: number;
+  // AI Freedom Mode - when enabled, AI gives best recommendation without constraints
+  ai_unrestricted: boolean;
   created_at: string;
   updated_at: string;
 }

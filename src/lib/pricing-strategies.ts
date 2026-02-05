@@ -575,41 +575,47 @@ export function calculateOptimalPrice(context: PricingContext): OptimalPrice {
     reasoning.push(`Market gap opportunity at $${intel.marketGap.toFixed(2)} - no direct competition.`);
   }
 
-  // Step 6: Apply constraints
-  // Min margin
-  const absoluteFloor = Math.max(
-    cost * (1 + settings.min_margin / 100),
-    cost + settings.min_margin_dollars
-  );
-  if (targetPrice < absoluteFloor) {
-    targetPrice = absoluteFloor;
-    reasoning.push(`Applied minimum margin floor: $${absoluteFloor.toFixed(2)}.`);
-  }
+  // Step 6: Apply constraints (SKIP if AI Unrestricted Mode is enabled)
+  const isUnrestricted = settings.ai_unrestricted ?? false;
 
-  // MSRP ceiling
-  if (msrp && settings.respect_msrp && targetPrice > msrp) {
-    targetPrice = msrp;
-    reasoning.push(`Capped at MSRP: $${msrp.toFixed(2)}.`);
-  }
-
-  // Max above market
-  if (intel.priceCeiling > 0) {
-    const maxAllowed = intel.priceCeiling * (1 + settings.max_above / 100);
-    if (targetPrice > maxAllowed) {
-      targetPrice = maxAllowed;
-      reasoning.push(`Capped at ${settings.max_above}% above market ceiling: $${maxAllowed.toFixed(2)}.`);
+  if (isUnrestricted) {
+    reasoning.push(`AI UNRESTRICTED MODE: Skipping all pricing constraints for best expert recommendation.`);
+  } else {
+    // Min margin
+    const absoluteFloor = Math.max(
+      cost * (1 + settings.min_margin / 100),
+      cost + settings.min_margin_dollars
+    );
+    if (targetPrice < absoluteFloor) {
+      targetPrice = absoluteFloor;
+      reasoning.push(`Applied minimum margin floor: $${absoluteFloor.toFixed(2)}.`);
     }
-  }
 
-  // Max change from current price
-  const maxIncrease = currentPrice * (1 + settings.max_increase / 100);
-  const maxDecrease = currentPrice * (1 - settings.max_decrease / 100);
-  if (targetPrice > maxIncrease) {
-    targetPrice = maxIncrease;
-    reasoning.push(`Limited to ${settings.max_increase}% max increase: $${maxIncrease.toFixed(2)}.`);
-  } else if (targetPrice < maxDecrease) {
-    targetPrice = maxDecrease;
-    reasoning.push(`Limited to ${settings.max_decrease}% max decrease: $${maxDecrease.toFixed(2)}.`);
+    // MSRP ceiling
+    if (msrp && settings.respect_msrp && targetPrice > msrp) {
+      targetPrice = msrp;
+      reasoning.push(`Capped at MSRP: $${msrp.toFixed(2)}.`);
+    }
+
+    // Max above market
+    if (intel.priceCeiling > 0) {
+      const maxAllowed = intel.priceCeiling * (1 + settings.max_above / 100);
+      if (targetPrice > maxAllowed) {
+        targetPrice = maxAllowed;
+        reasoning.push(`Capped at ${settings.max_above}% above market ceiling: $${maxAllowed.toFixed(2)}.`);
+      }
+    }
+
+    // Max change from current price
+    const maxIncrease = currentPrice * (1 + settings.max_increase / 100);
+    const maxDecrease = currentPrice * (1 - settings.max_decrease / 100);
+    if (targetPrice > maxIncrease) {
+      targetPrice = maxIncrease;
+      reasoning.push(`Limited to ${settings.max_increase}% max increase: $${maxIncrease.toFixed(2)}.`);
+    } else if (targetPrice < maxDecrease) {
+      targetPrice = maxDecrease;
+      reasoning.push(`Limited to ${settings.max_decrease}% max decrease: $${maxDecrease.toFixed(2)}.`);
+    }
   }
 
   // Step 7: Apply psychological pricing

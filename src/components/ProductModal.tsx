@@ -1,17 +1,18 @@
 'use client';
 
-import type { Product, Variant, Analysis, ProductIdentity, CompetitorAnalysis } from '@/types';
+import type { Product, Variant, Analysis, ProductIdentity, CompetitorAnalysis, Settings } from '@/types';
 
 interface Props {
   product: Product;
   variant: Variant;
   analysis: Analysis | null;
+  settings?: Partial<Settings>;
   onClose: () => void;
   onAccept: (analysisId: string) => void;
   onReanalyze: (productId: string, variantId: string) => void;
 }
 
-export default function ProductModal({ product, variant, analysis, onClose, onAccept, onReanalyze }: Props) {
+export default function ProductModal({ product, variant, analysis, settings, onClose, onAccept, onReanalyze }: Props) {
   const marginPct = variant.cost ? ((variant.price - variant.cost) / variant.price) * 100 : null;
   const suggestedMargin = analysis?.suggested_price && variant.cost
     ? ((analysis.suggested_price - variant.cost) / analysis.suggested_price) * 100 : null;
@@ -20,6 +21,9 @@ export default function ProductModal({ product, variant, analysis, onClose, onAc
 
   const identity = analysis?.product_identity as ProductIdentity | null;
   const compAnalysis = analysis?.competitor_analysis as CompetitorAnalysis | null;
+
+  // Check if unrestricted mode
+  const isUnrestricted = settings?.ai_unrestricted ?? false;
 
   const tierColors: Record<string, string> = {
     import: 'bg-orange-900/50 text-orange-400 border-orange-700',
@@ -49,6 +53,52 @@ export default function ProductModal({ product, variant, analysis, onClose, onAc
           </div>
 
           <div className="p-6">
+            {/* Active Pricing Rules Indicator */}
+            <div className={`rounded-lg p-3 mb-6 ${isUnrestricted ? 'bg-purple-900/30 border border-purple-700' : 'bg-gray-700/50 border border-gray-600'}`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  {isUnrestricted ? (
+                    <>
+                      <span className="text-lg">🧠</span>
+                      <div>
+                        <span className="font-medium text-purple-400">AI Unrestricted Mode</span>
+                        <span className="ml-2 px-2 py-0.5 bg-purple-600 text-purple-100 text-xs rounded font-medium">ACTIVE</span>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-lg">⚙️</span>
+                      <span className="font-medium text-gray-300">Pricing Rules Active</span>
+                    </>
+                  )}
+                </div>
+                <a href="/settings" className="text-xs text-blue-400 hover:text-blue-300">Change Settings</a>
+              </div>
+
+              {isUnrestricted ? (
+                <p className="text-xs text-purple-300/80 mt-2">AI is providing its best expert recommendation without constraints</p>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3 text-xs">
+                  <div className="bg-gray-800/50 rounded px-2 py-1.5">
+                    <span className="text-gray-500">Min Margin:</span>
+                    <span className="ml-1 text-gray-300">{settings?.min_margin ?? 20}% / ${settings?.min_margin_dollars ?? 3}</span>
+                  </div>
+                  <div className="bg-gray-800/50 rounded px-2 py-1.5">
+                    <span className="text-gray-500">MSRP Ceiling:</span>
+                    <span className="ml-1 text-gray-300">{settings?.respect_msrp ? 'Yes' : 'No'}</span>
+                  </div>
+                  <div className="bg-gray-800/50 rounded px-2 py-1.5">
+                    <span className="text-gray-500">Max Above:</span>
+                    <span className="ml-1 text-gray-300">+{settings?.max_above ?? 5}%</span>
+                  </div>
+                  <div className="bg-gray-800/50 rounded px-2 py-1.5">
+                    <span className="text-gray-500">Price Change:</span>
+                    <span className="ml-1 text-gray-300">+{settings?.max_increase ?? 10}% / -{settings?.max_decrease ?? 15}%</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Product Info */}
             <div className="flex gap-6 mb-6">
               <div className="flex-shrink-0">
