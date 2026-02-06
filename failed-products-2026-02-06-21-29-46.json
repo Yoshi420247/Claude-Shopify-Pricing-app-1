@@ -1,0 +1,571 @@
+{
+  "generatedAt": "2026-02-06T21:29:46.666Z",
+  "summary": {
+    "totalProducts": 1075,
+    "totalFailed": 62,
+    "totalApplied": 397,
+    "elapsedMinutes": 8
+  },
+  "failedVariantIds": [
+    "50689762591000",
+    "50689769111832",
+    "50689769177368",
+    "51635416400152",
+    "50689762066712",
+    "51635401851160",
+    "50689761640728",
+    "50689763442968",
+    "51635414565144",
+    "50689769865496",
+    "51635414630680",
+    "51635414663448",
+    "51635424002328",
+    "50689786970392",
+    "51635881050392",
+    "50689778549016",
+    "50689779466520",
+    "50689799749912",
+    "51635421905176",
+    "50689776779544",
+    "50689763705112",
+    "51636053606680",
+    "51636062191896",
+    "50689778286872",
+    "50689774223640",
+    "50689770127640",
+    "50689773175064",
+    "50689770291480",
+    "50689774092568",
+    "50689774059800",
+    "51635417252120",
+    "50689774518552",
+    "51635417841944",
+    "50689772355864",
+    "50689771733272",
+    "50689774813464",
+    "50689764131096",
+    "50689766916376",
+    "50689787953432",
+    "50689788117272",
+    "50689763148056",
+    "51635881017624",
+    "51635424297240",
+    "51635865387288",
+    "50689789722904",
+    "51635371966744",
+    "51635422363928",
+    "50689798799640",
+    "50689774321944",
+    "50689794015512",
+    "50689776124184",
+    "50689763770648",
+    "50689765966104",
+    "50689780121880",
+    "50689764032792",
+    "51636065567000",
+    "51635392708888",
+    "50689763737880",
+    "50689775960344",
+    "51635416006936",
+    "50689787068696",
+    "51636082508056"
+  ],
+  "failedProducts": [
+    {
+      "productId": "9885266739480",
+      "variantId": "50689762591000",
+      "productTitle": "2″ 14mm Clear w/ Color Horn Flower Bowl",
+      "variantTitle": "Default Title",
+      "error": "HTTP 502",
+      "timestamp": "2026-02-06T21:22:35.152Z"
+    },
+    {
+      "productId": "9885271949592",
+      "variantId": "50689769111832",
+      "productTitle": "2.5″ 18mm U&M Fume Flower Bowl w/ Handle – Made in USA – 10mm/18mm",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:23:16.413Z"
+    },
+    {
+      "productId": "9885272015128",
+      "variantId": "50689769177368",
+      "productTitle": "2″ 18mm Black Color Lip Flower Bowl",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:25:51.581Z"
+    },
+    {
+      "productId": "10068141834520",
+      "variantId": "51635416400152",
+      "productTitle": "4″ Decal Wrap Hand Pipe",
+      "variantTitle": "Default Title",
+      "error": "HTTP 502",
+      "timestamp": "2026-02-06T21:26:12.820Z"
+    },
+    {
+      "productId": "9885266215192",
+      "variantId": "50689762066712",
+      "productTitle": "2″ 18mm Clear Martini Screen Flower Bowl",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:26:29.116Z"
+    },
+    {
+      "productId": "10068137771288",
+      "variantId": "51635401851160",
+      "productTitle": "2″ 14mm Fume Gear Flower Bowl",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:26:36.397Z"
+    },
+    {
+      "productId": "9885265854744",
+      "variantId": "50689761640728",
+      "productTitle": "1.5″ 10mm Quartz Nectar Tip",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:26:42.949Z"
+    },
+    {
+      "productId": "9885267493144",
+      "variantId": "50689763442968",
+      "productTitle": "2″ 14mm Color Scalloped Flower Bowl",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:26:51.332Z"
+    },
+    {
+      "productId": "10068140425496",
+      "variantId": "51635414565144",
+      "productTitle": "2.5″ Plastic Magnetic Grinder",
+      "variantTitle": "1",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:26:56.664Z"
+    },
+    {
+      "productId": "9885272703256",
+      "variantId": "50689769865496",
+      "productTitle": "2″ 18mm Spiral Can Flower Bowl",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:27:08.008Z"
+    },
+    {
+      "productId": "10068140425496",
+      "variantId": "51635414630680",
+      "productTitle": "2.5″ Plastic Magnetic Grinder",
+      "variantTitle": "12",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:27:09.706Z"
+    },
+    {
+      "productId": "10068140425496",
+      "variantId": "51635414663448",
+      "productTitle": "2.5″ Plastic Magnetic Grinder",
+      "variantTitle": "24 Pack with Display",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:27:28.521Z"
+    },
+    {
+      "productId": "10068145504536",
+      "variantId": "51635424002328",
+      "productTitle": "3.5″ Color w/ White Swirl Chillum",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:27:39.498Z"
+    },
+    {
+      "productId": "9885287121176",
+      "variantId": "50689786970392",
+      "productTitle": "2″ Red Spiral Pendant",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:27:47.611Z"
+    },
+    {
+      "productId": "9885270376728",
+      "variantId": "51635881050392",
+      "productTitle": "5″ Glass Hand Pipe",
+      "variantTitle": "Style C",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:48.020Z"
+    },
+    {
+      "productId": "9885280272664",
+      "variantId": "50689778549016",
+      "productTitle": "5″ 14 M 90° Encore Babyface Slit Ash Catcher",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:48.813Z"
+    },
+    {
+      "productId": "9885281190168",
+      "variantId": "50689779466520",
+      "productTitle": "4.5″ Mushroom Hand Pipe",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:50.999Z"
+    },
+    {
+      "productId": "9885296558360",
+      "variantId": "50689799749912",
+      "productTitle": "2015 Creep Frankenstein Pendant",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:27:53.426Z"
+    },
+    {
+      "productId": "10068144324888",
+      "variantId": "51635421905176",
+      "productTitle": "5″ Frit Color Swirl Fume Hand Pipe",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:55.185Z"
+    },
+    {
+      "productId": "9885278568728",
+      "variantId": "50689776779544",
+      "productTitle": "5″ Clear Barrel Ash Catcher",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:55.382Z"
+    },
+    {
+      "productId": "9885267755288",
+      "variantId": "50689763705112",
+      "productTitle": "4″ Frit Ball Button Long Chillum",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:55.527Z"
+    },
+    {
+      "productId": "10068501365016",
+      "variantId": "51636053606680",
+      "productTitle": "5″ CLEAR CLASSIC SHOWERHEAD RIG",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:55.782Z"
+    },
+    {
+      "productId": "10068508770584",
+      "variantId": "51636062191896",
+      "productTitle": "5.5″ FUME W/ COBALT DONUT STAND NECTAR STRAW",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:56.684Z"
+    },
+    {
+      "productId": "9885280010520",
+      "variantId": "50689778286872",
+      "productTitle": "5″ Dragon Fruit Hand Pipe",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:57.113Z"
+    },
+    {
+      "productId": "9885276504344",
+      "variantId": "50689774223640",
+      "productTitle": "5″ Glass Bubbler",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:57.210Z"
+    },
+    {
+      "productId": "9885272965400",
+      "variantId": "50689770127640",
+      "productTitle": "5″ Fume Rasta Glass Bubbler",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:57.455Z"
+    },
+    {
+      "productId": "9885275717912",
+      "variantId": "50689773175064",
+      "productTitle": "5.5″ Glass Bubbler – $34.99",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:57.534Z"
+    },
+    {
+      "productId": "9885273063704",
+      "variantId": "50689770291480",
+      "productTitle": "5″ Color w/ White Linework Bubbler",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:57.962Z"
+    },
+    {
+      "productId": "9885276406040",
+      "variantId": "50689774092568",
+      "productTitle": "5″ Fume Glass Hand Pipe",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:58.627Z"
+    },
+    {
+      "productId": "9885276373272",
+      "variantId": "50689774059800",
+      "productTitle": "5″ Fume Hammer Glass Hand Pipe – Style A",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:59.123Z"
+    },
+    {
+      "productId": "10068142588184",
+      "variantId": "51635417252120",
+      "productTitle": "5″ Galaxy Fume Hammer Hand Pipe",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:27:59.894Z"
+    },
+    {
+      "productId": "9885276733720",
+      "variantId": "50689774518552",
+      "productTitle": "5″ Fume w/ Flower Glass Hand Pipe",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:00.562Z"
+    },
+    {
+      "productId": "10068143145240",
+      "variantId": "51635417841944",
+      "productTitle": "3.5″ Silicone Decal Hand Pipe w/ Glass Bowl",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:00.667Z"
+    },
+    {
+      "productId": "9885275062552",
+      "variantId": "50689772355864",
+      "productTitle": "3.5″ Color Honeydrop Screw on Tip Nectar Kit",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:28:01.010Z"
+    },
+    {
+      "productId": "9885274439960",
+      "variantId": "50689771733272",
+      "productTitle": "5″ Clear Showerhead Ash Catcher",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:02.027Z"
+    },
+    {
+      "productId": "9885276930328",
+      "variantId": "50689774813464",
+      "productTitle": "5″ Fume Flower Glass Hand Pipe",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:02.507Z"
+    },
+    {
+      "productId": "9885268148504",
+      "variantId": "50689764131096",
+      "productTitle": "4″ Fume Wrap & Rake Eye Chillum",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:04.648Z"
+    },
+    {
+      "productId": "9885270376728",
+      "variantId": "50689766916376",
+      "productTitle": "5″ Glass Hand Pipe",
+      "variantTitle": "Style A",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:05.040Z"
+    },
+    {
+      "productId": "9885287907608",
+      "variantId": "50689787953432",
+      "productTitle": "2″ Peaselburg Dichro Shark Pendant",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:28:06.187Z"
+    },
+    {
+      "productId": "9885287973144",
+      "variantId": "50689788117272",
+      "productTitle": "2″ Peaselburg Dichro Dragonfly Pendant",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:28:06.696Z"
+    },
+    {
+      "productId": "9885267198232",
+      "variantId": "50689763148056",
+      "productTitle": "3″ Fume Rasta Cane Chillum",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:06.966Z"
+    },
+    {
+      "productId": "9885270376728",
+      "variantId": "51635881017624",
+      "productTitle": "5″ Glass Hand Pipe",
+      "variantTitle": "Style B",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:07.278Z"
+    },
+    {
+      "productId": "10068145701144",
+      "variantId": "51635424297240",
+      "productTitle": "3.5″ Dichro Color Swirl Fume Chillum",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:28:07.580Z"
+    },
+    {
+      "productId": "9885269852440",
+      "variantId": "51635865387288",
+      "productTitle": "4″ Glass Hand Pipe",
+      "variantTitle": "Style D",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:10.981Z"
+    },
+    {
+      "productId": "9885289120024",
+      "variantId": "50689789722904",
+      "productTitle": "3″ Peaselburg Dichro Large Turtle Pendant",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:12.280Z"
+    },
+    {
+      "productId": "10068119650584",
+      "variantId": "51635371966744",
+      "productTitle": "25″ Contraband Shotgun Bong",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:28:13.334Z"
+    },
+    {
+      "productId": "10068144554264",
+      "variantId": "51635422363928",
+      "productTitle": "4″ Element Fume Pipe – Made in USA",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:20.259Z"
+    },
+    {
+      "productId": "9885295837464",
+      "variantId": "50689798799640",
+      "productTitle": "20″ Monark Half Color Recycler Beaker",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:28:22.001Z"
+    },
+    {
+      "productId": "9885276569880",
+      "variantId": "50689774321944",
+      "productTitle": "4.5″ Fume Flower & Bee Glass Hand Pipe",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:26.258Z"
+    },
+    {
+      "productId": "9885292298520",
+      "variantId": "50689794015512",
+      "productTitle": "5 Oz Glass Jar w/ Black Cr Lid",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:29.752Z"
+    },
+    {
+      "productId": "9885277913368",
+      "variantId": "50689776124184",
+      "productTitle": "4.5″ Spiral Glass Hand Pipe",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:40.208Z"
+    },
+    {
+      "productId": "9885267820824",
+      "variantId": "50689763770648",
+      "productTitle": "4″ Net Design Mini Hammer Bubbler",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:41.938Z"
+    },
+    {
+      "productId": "9885269688600",
+      "variantId": "50689765966104",
+      "productTitle": "4″ Silicone Rabbit Pipe w/ Glass Bowl",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:42.756Z"
+    },
+    {
+      "productId": "9885281845528",
+      "variantId": "50689780121880",
+      "productTitle": "4″ Encore Large Turbine Ash Catcher",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:28:48.446Z"
+    },
+    {
+      "productId": "9885268050200",
+      "variantId": "50689764032792",
+      "productTitle": "3″ Thick Fume Green Dot Chillum",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:28:58.639Z"
+    },
+    {
+      "productId": "10068510966040",
+      "variantId": "51636065567000",
+      "productTitle": "4.5″ SILICONE DECAL NECTAR STRAW W/ CERAMIC TIP",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:29:05.897Z"
+    },
+    {
+      "productId": "10068129644824",
+      "variantId": "51635392708888",
+      "productTitle": "4″ Fume Color Linework Glass Bubbler",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:29:08.185Z"
+    },
+    {
+      "productId": "9885267788056",
+      "variantId": "50689763737880",
+      "productTitle": "4″ Canework Bubbler",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:29:15.813Z"
+    },
+    {
+      "productId": "9885277782296",
+      "variantId": "50689775960344",
+      "productTitle": "5″ Cactus Nectar Straw",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:29:21.733Z"
+    },
+    {
+      "productId": "10068141474072",
+      "variantId": "51635416006936",
+      "productTitle": "4″ XL Grinder",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:29:24.747Z"
+    },
+    {
+      "productId": "9885287219480",
+      "variantId": "50689787068696",
+      "productTitle": "4.5″ Double Ended Character Dabber – 30 Pcs",
+      "variantTitle": "Default Title",
+      "error": "AI returned empty response",
+      "timestamp": "2026-02-06T21:29:28.580Z"
+    },
+    {
+      "productId": "10068522860824",
+      "variantId": "51636082508056",
+      "productTitle": "4″ CRYSTAL POKER – MADE IN USA",
+      "variantTitle": "Default Title",
+      "error": "You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.",
+      "timestamp": "2026-02-06T21:29:46.665Z"
+    }
+  ]
+}
