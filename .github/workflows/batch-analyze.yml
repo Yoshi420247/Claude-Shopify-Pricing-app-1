@@ -41,6 +41,11 @@ on:
         required: true
         type: boolean
         default: false
+      failed_report:
+        description: 'Re-run failed products from report file (e.g. failed-products-2026-02-06-21-29-46.json)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   analyze:
@@ -75,12 +80,17 @@ jobs:
         run: |
           ARGS="--status ${{ inputs.status }} --concurrency ${{ inputs.concurrency }} --search-mode ${{ inputs.search_mode }}"
 
-          if [ -n "${{ inputs.vendor }}" ]; then
-            ARGS="$ARGS --vendor \"${{ inputs.vendor }}\""
-          fi
+          if [ -n "${{ inputs.failed_report }}" ]; then
+            # Re-run mode: only process previously failed products
+            ARGS="--failed-report ${{ inputs.failed_report }} --concurrency ${{ inputs.concurrency }} --search-mode ${{ inputs.search_mode }}"
+          else
+            if [ -n "${{ inputs.vendor }}" ]; then
+              ARGS="$ARGS --vendor \"${{ inputs.vendor }}\""
+            fi
 
-          if [ "${{ inputs.limit }}" != "0" ] && [ -n "${{ inputs.limit }}" ]; then
-            ARGS="$ARGS --limit ${{ inputs.limit }}"
+            if [ "${{ inputs.limit }}" != "0" ] && [ -n "${{ inputs.limit }}" ]; then
+              ARGS="$ARGS --limit ${{ inputs.limit }}"
+            fi
           fi
 
           if [ "${{ inputs.dry_run }}" = "true" ]; then
