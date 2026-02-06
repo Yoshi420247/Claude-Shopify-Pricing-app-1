@@ -36,6 +36,11 @@ on:
         required: false
         type: string
         default: '0'
+      skip_analyzed:
+        description: 'Skip already-analyzed products (only process new/unanalyzed)'
+        required: true
+        type: boolean
+        default: false
       dry_run:
         description: 'Dry run (analyze only, do NOT apply prices)'
         required: true
@@ -91,6 +96,10 @@ jobs:
             if [ "${{ inputs.limit }}" != "0" ] && [ -n "${{ inputs.limit }}" ]; then
               ARGS="$ARGS --limit ${{ inputs.limit }}"
             fi
+          fi
+
+          if [ "${{ inputs.skip_analyzed }}" = "true" ]; then
+            ARGS="$ARGS --skip-analyzed"
           fi
 
           if [ "${{ inputs.dry_run }}" = "true" ]; then

@@ -11,6 +11,9 @@
 //   npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts \
 //     --failed-report reports/failed-products-2026-02-06.json
 //
+// Skip already-analyzed products (only process new/unanalyzed):
+//   npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts --skip-analyzed
+//
 // Environment variables required:
 //   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
 //   OPENAI_API_KEY, BRAVE_API_KEY,
@@ -45,6 +48,7 @@ function parseArgs(): {
   concurrency: number;
   dryRun: boolean;
   skipApply: boolean;
+  skipAnalyzed: boolean;
   limit: number;
   searchMode: SearchMode;
   failedReport: string | null;
@@ -65,6 +69,7 @@ function parseArgs(): {
     concurrency: parseInt(get('--concurrency') || '100', 10),
     dryRun: has('--dry-run'),
     skipApply: has('--skip-apply'),
+    skipAnalyzed: has('--skip-analyzed'),
     limit: parseInt(get('--limit') || '0', 10),
     searchMode,
     failedReport: get('--failed-report'),
@@ -259,14 +264,15 @@ async function main() {
   console.log('\n' + '='.repeat(70));
   console.log('  Oil Slick Pad — Batch Price Analyzer (High-Concurrency)');
   console.log('='.repeat(70));
-  console.log(`  Vendor filter: ${opts.vendor || 'ALL'}`);
-  console.log(`  Status filter: ${opts.status}`);
-  console.log(`  Concurrency:   ${opts.concurrency} workers`);
-  console.log(`  Dry run:       ${opts.dryRun}`);
-  console.log(`  Skip apply:    ${opts.skipApply}`);
-  console.log(`  Search mode:   ${opts.searchMode}`);
-  console.log(`  Limit:         ${opts.limit || 'none'}`);
-  console.log(`  Failed report: ${opts.failedReport || 'none'}`);
+  console.log(`  Vendor filter:  ${opts.vendor || 'ALL'}`);
+  console.log(`  Status filter:  ${opts.status}`);
+  console.log(`  Concurrency:    ${opts.concurrency} workers`);
+  console.log(`  Dry run:        ${opts.dryRun}`);
+  console.log(`  Skip apply:     ${opts.skipApply}`);
+  console.log(`  Skip analyzed:  ${opts.skipAnalyzed}`);
+  console.log(`  Search mode:    ${opts.searchMode}`);
+  console.log(`  Limit:          ${opts.limit || 'none'}`);
+  console.log(`  Failed report:  ${opts.failedReport || 'none'}`);
   console.log('='.repeat(70) + '\n');
 
   // Validate env vars
@@ -390,6 +396,47 @@ async function main() {
     log(`Found ${allProducts.length} products, ${variantList.length} variants total`);
   }
 
+  // ---------------------------------------------------------------------------
+  // Skip already-analyzed variants (query analyses table for successful ones)
+  // ---------------------------------------------------------------------------
+  if (opts.skipAnalyzed && toProcess.length > 0) {
+    log('Checking for already-analyzed variants...');
+
+    // Query all successful analyses (no error, has a suggested price)
+    const analyzedVariantIds = new Set<string>();
+    let aPage = 0;
+    const aPageSize = 1000;
+
+    while (true) {
+      const { data: analyses, error: aErr } = await db
+        .from('analyses')
+        .select('variant_id')
+        .not('suggested_price', 'is', null)
+        .is('error', null)
+        .range(aPage * aPageSize, (aPage + 1) * aPageSize - 1);
+
+      if (aErr) {
+        logError(`Failed to query analyses: ${aErr.message}`);
+        break;
+      }
+      if (!analyses || analyses.length === 0) break;
+
+      for (const a of analyses) {
+        analyzedVariantIds.add(a.variant_id);
+      }
+
+      if (analyses.length < aPageSize) break;
+      aPage++;
+    }
+
+    const beforeCount = toProcess.length;
+    toProcess = toProcess.filter(({ variant }) => !analyzedVariantIds.has(variant.id));
+    const skipped = beforeCount - toProcess.length;
+
+    log(`Skipped ${skipped} already-analyzed variants (${analyzedVariantIds.size} total in DB)`);
+    log(`Remaining: ${toProcess.length} variants to process`);
+  }
+
   log(`Processing ${toProcess.length} variants with ${opts.concurrency} concurrent workers\n`);
 
   if (toProcess.length === 0) {
@@ -399,7 +446,7 @@ async function main() {
 
   // Log to activity_log
   await db.from('activity_log').insert({
-    message: `Batch started: ${toProcess.length} variants, ${opts.concurrency} workers${opts.vendor ? ` (vendor: ${opts.vendor})` : ''}${opts.failedReport ? ' (retry mode)' : ''}, AI unlimited, auto-apply${opts.dryRun ? ' (DRY RUN)' : ''}`,
+    message: `Batch started: ${toProcess.length} variants, ${opts.concurrency} workers${opts.vendor ? ` (vendor: ${opts.vendor})` : ''}${opts.failedReport ? ' (retry mode)' : ''}${opts.skipAnalyzed ? ' (skip-analyzed)' : ''}, AI unlimited, auto-apply${opts.dryRun ? ' (DRY RUN)' : ''}`,
     type: 'info',
   });
 
