@@ -68,39 +68,94 @@ export async function chatCompletion(options: ChatCompletionOptions): Promise<st
     }
   }
 
-  // Route through rate limiter to prevent overwhelming OpenAI during parallel batch processing
-  return openaiRateLimiter.execute(async () => {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${key}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
+  // Retry wrapper for transient failures (empty responses, timeouts)
+  const MAX_EMPTY_RETRIES = 2;
+  let lastError: Error | null = null;
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
-      throw new Error(err.error?.message || `OpenAI error: ${res.status}`);
-    }
+  for (let emptyRetry = 0; emptyRetry <= MAX_EMPTY_RETRIES; emptyRetry++) {
+    try {
+      const content = await openaiRateLimiter.execute(async () => {
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        });
 
-    const data = await res.json();
-    const content = data.choices[0]?.message?.content;
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
+          throw new Error(err.error?.message || `OpenAI error: ${res.status}`);
+        }
 
-    if (!content) {
-      // Check for refusal or other issues
-      const refusal = data.choices[0]?.message?.refusal;
-      if (refusal) {
-        throw new Error(`AI refused: ${refusal}`);
+        const data = await res.json();
+        const text = data.choices[0]?.message?.content;
+
+        if (!text) {
+          const refusal = data.choices[0]?.message?.refusal;
+          if (refusal) {
+            throw new Error(`AI refused: ${refusal}`);
+          }
+          throw new Error('AI returned empty response');
+        }
+
+        return text;
+      }, 3);
+
+      return content;
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e));
+      // Only retry on empty responses or timeouts, not on refusals or quota errors
+      const msg = lastError.message.toLowerCase();
+      const isRetryable = msg.includes('empty response') || msg.includes('timeout') || msg.includes('econnreset');
+      if (isRetryable && emptyRetry < MAX_EMPTY_RETRIES) {
+        const backoff = (emptyRetry + 1) * 2000;
+        console.log(`[openai] Empty/timeout response, retry ${emptyRetry + 1}/${MAX_EMPTY_RETRIES} after ${backoff}ms`);
+        await new Promise(r => setTimeout(r, backoff));
+        continue;
       }
-      throw new Error('AI returned empty response');
+      throw lastError;
     }
+  }
 
-    return content;
-  }, 3);
+  throw lastError || new Error('AI returned empty response');
 }
 
-// Parse JSON from AI response, handling markdown code blocks and common issues
+// Attempt to fix truncated JSON by closing unclosed braces/brackets/strings
+function tryFixTruncatedJson(str: string): string {
+  let openBraces = 0;
+  let openBrackets = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\') { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') openBraces++;
+    if (ch === '}') openBraces--;
+    if (ch === '[') openBrackets++;
+    if (ch === ']') openBrackets--;
+  }
+
+  // If we're in a string, close it
+  if (inString) str += '"';
+
+  // Remove trailing partial value (e.g., "key": tru or "key": "partial)
+  str = str.replace(/,\s*"[^"]*"\s*:\s*(?:[^,}\]"]*|"[^"]*)?$/, '');
+  str = str.replace(/,\s*$/, '');
+
+  // Close open brackets and braces
+  while (openBrackets > 0) { str += ']'; openBrackets--; }
+  while (openBraces > 0) { str += '}'; openBraces--; }
+
+  return str;
+}
+
+// Parse JSON from AI response, handling markdown code blocks, truncation, and common issues
 export function parseAIJson<T>(raw: string): T {
   if (!raw || raw.trim() === '') {
     throw new Error('Empty response from AI');
@@ -128,10 +183,17 @@ export function parseAIJson<T>(raw: string): T {
   try {
     return JSON.parse(cleaned);
   } catch (e) {
-    // If parsing fails, try to extract what we can
     console.error('JSON parse error. Raw response:', raw.substring(0, 500));
 
-    // Last resort: try to parse a partial JSON
+    // Try fixing truncated JSON (common with long responses hitting token limits)
+    try {
+      const fixed = tryFixTruncatedJson(cleaned);
+      return JSON.parse(fixed);
+    } catch {
+      // Continue to other fallbacks
+    }
+
+    // Try to extract the first complete JSON object from the response
     const partialMatch = cleaned.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/);
     if (partialMatch) {
       try {

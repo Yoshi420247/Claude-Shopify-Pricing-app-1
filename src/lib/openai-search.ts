@@ -94,6 +94,8 @@ Return at least 2-5 competitor prices if available. If no exact matches exist, i
           tools: [{ type: 'web_search' }],
           tool_choice: 'required',
           input: searchPrompt,
+          text: { format: { type: 'json_object' } },
+          max_output_tokens: 4000,
         }),
       });
 
@@ -125,8 +127,14 @@ Return at least 2-5 competitor prices if available. If no exact matches exist, i
       return textContent;
     }, 3);
 
-    // Parse the JSON response
-    const parsed = parseAIJson<OpenAISearchPriceResult>(result);
+    // Try to parse the JSON response
+    let parsed: OpenAISearchPriceResult;
+    try {
+      parsed = parseAIJson<OpenAISearchPriceResult>(result);
+    } catch {
+      // Fallback: extract prices from narrative text using regex
+      parsed = extractPricesFromNarrative(result, product.title);
+    }
 
     // Convert to CompetitorPrice format
     const competitors: CompetitorPrice[] = (parsed.competitors || [])
@@ -172,4 +180,51 @@ Return at least 2-5 competitor prices if available. If no exact matches exist, i
       queries: [`openai-web-search-failed: ${product.title}`],
     };
   }
+}
+
+/**
+ * Fallback: extract price data from narrative/non-JSON OpenAI responses.
+ * When the model returns text like "priced at $15.00" instead of JSON,
+ * we regex-extract prices and build a minimal result.
+ */
+function extractPricesFromNarrative(text: string, productTitle: string): OpenAISearchPriceResult {
+  const competitors: OpenAISearchPriceResult['competitors'] = [];
+  const seenPrices = new Set<number>();
+
+  // Extract prices with context (domain mentions near prices)
+  const priceMatches = text.matchAll(/\$\s*([\d,]+\.?\d{0,2})/g);
+  for (const match of priceMatches) {
+    const price = parseFloat(match[1].replace(/,/g, ''));
+    if (price >= 1 && price <= 2000 && !seenPrices.has(price)) {
+      seenPrices.add(price);
+      // Try to find a nearby domain/source name
+      const start = Math.max(0, (match.index || 0) - 200);
+      const context = text.substring(start, (match.index || 0) + 50);
+      let source = 'web-search-extract';
+      for (const shop of RETAIL_SMOKE_SHOPS) {
+        if (context.toLowerCase().includes(shop)) {
+          source = shop;
+          break;
+        }
+      }
+      // Also try to find any domain in context
+      const domainMatch = context.match(/(?:https?:\/\/)?(?:www\.)?([a-z0-9-]+\.(?:com|co|net|org))/i);
+      if (domainMatch && source === 'web-search-extract') {
+        source = domainMatch[1];
+      }
+
+      competitors.push({
+        source,
+        url: `https://${source}`,
+        title: productTitle,
+        price,
+        isKnownRetailer: RETAIL_SMOKE_SHOPS.some(shop => source.includes(shop)),
+      });
+    }
+  }
+
+  return {
+    competitors,
+    searchSummary: `Extracted ${competitors.length} prices from narrative response`,
+  };
 }

@@ -1,122 +1,115 @@
-// Smart rate limiter with exponential backoff and request queuing
+// Concurrent rate limiter with semaphore pattern
+// Allows N requests in-flight simultaneously while respecting per-minute limits
+// Previous version was a serial queue (processed one request at a time),
+// which was the main bottleneck for batch processing.
 
-interface QueuedRequest<T> {
-  execute: () => Promise<T>;
-  resolve: (value: T) => void;
-  reject: (error: Error) => void;
-  retries: number;
-  maxRetries: number;
-}
+class ConcurrentRateLimiter {
+  private activeCount = 0;
+  private maxConcurrent: number;
+  private pendingResolvers: (() => void)[] = [];
+  private requestTimestamps: number[] = [];
+  private maxPerMinute: number;
+  private name: string;
 
-class RateLimiter {
-  private queue: QueuedRequest<unknown>[] = [];
-  private processing = false;
-  private lastRequestTime = 0;
-  private minInterval: number; // ms between requests
-  private requestCount = 0;
-  private windowStart = Date.now();
-  private maxPerWindow: number;
-  private windowSize: number; // ms
-
-  constructor(options: {
-    requestsPerSecond?: number;
+  constructor(name: string, options: {
+    maxConcurrent?: number;
     maxPerMinute?: number;
-  } = {}) {
-    this.minInterval = 1000 / (options.requestsPerSecond || 1);
-    this.maxPerWindow = options.maxPerMinute || 15;
-    this.windowSize = 60000; // 1 minute
+  }) {
+    this.name = name;
+    this.maxConcurrent = options.maxConcurrent || 50;
+    this.maxPerMinute = options.maxPerMinute || 500;
   }
 
   async execute<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
-    return new Promise((resolve, reject) => {
-      this.queue.push({
-        execute: fn,
-        resolve: resolve as (value: unknown) => void,
-        reject,
-        retries: 0,
-        maxRetries,
-      });
-      this.processQueue();
-    });
+    await this.acquire();
+    try {
+      return await this.executeWithRetry(fn, maxRetries);
+    } finally {
+      this.release();
+    }
   }
 
-  private async processQueue() {
-    if (this.processing || this.queue.length === 0) return;
-    this.processing = true;
-
-    while (this.queue.length > 0) {
-      // Check window rate limit
-      const now = Date.now();
-      if (now - this.windowStart > this.windowSize) {
-        this.windowStart = now;
-        this.requestCount = 0;
-      }
-
-      if (this.requestCount >= this.maxPerWindow) {
-        const waitTime = this.windowSize - (now - this.windowStart) + 100;
-        console.log(`Rate limit: waiting ${Math.round(waitTime / 1000)}s for window reset`);
-        await this.sleep(waitTime);
-        continue;
-      }
-
-      // Check per-request rate limit
-      const timeSinceLastRequest = now - this.lastRequestTime;
-      if (timeSinceLastRequest < this.minInterval) {
-        await this.sleep(this.minInterval - timeSinceLastRequest);
-      }
-
-      const request = this.queue.shift()!;
-      this.lastRequestTime = Date.now();
-      this.requestCount++;
-
-      try {
-        const result = await request.execute();
-        request.resolve(result);
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-
-        // Check if rate limited
-        if (errorMessage.includes('429') || errorMessage.includes('RATE_LIMITED')) {
-          request.retries++;
-          if (request.retries <= request.maxRetries) {
-            // Exponential backoff: 2s, 4s, 8s, 16s
-            const backoff = Math.pow(2, request.retries) * 1000;
-            console.log(`Rate limited, retry ${request.retries}/${request.maxRetries} after ${backoff}ms`);
-            await this.sleep(backoff);
-            this.queue.unshift(request); // Put back at front of queue
-          } else {
-            request.reject(new Error(`Rate limited after ${request.maxRetries} retries`));
-          }
-        } else {
-          request.reject(error instanceof Error ? error : new Error(errorMessage));
-        }
-      }
+  private async acquire(): Promise<void> {
+    // Wait for a concurrent slot (semaphore)
+    while (this.activeCount >= this.maxConcurrent) {
+      await new Promise<void>(resolve => {
+        this.pendingResolvers.push(resolve);
+      });
     }
 
-    this.processing = false;
+    // Per-minute rate limiting (sliding window)
+    const now = Date.now();
+    this.requestTimestamps = this.requestTimestamps.filter(t => t > now - 60000);
+
+    while (this.requestTimestamps.length >= this.maxPerMinute) {
+      const oldestInWindow = this.requestTimestamps[0];
+      const waitTime = 60000 - (now - oldestInWindow) + 100;
+      if (waitTime > 0) {
+        console.log(`[${this.name}] Per-minute limit reached (${this.requestTimestamps.length}/${this.maxPerMinute}), waiting ${Math.round(waitTime / 1000)}s`);
+        await new Promise(r => setTimeout(r, waitTime));
+      }
+      const freshNow = Date.now();
+      this.requestTimestamps = this.requestTimestamps.filter(t => t > freshNow - 60000);
+    }
+
+    this.activeCount++;
+    this.requestTimestamps.push(Date.now());
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  private release(): void {
+    this.activeCount--;
+    if (this.pendingResolvers.length > 0) {
+      const next = this.pendingResolvers.shift()!;
+      next();
+    }
+  }
+
+  private async executeWithRetry<T>(fn: () => Promise<T>, maxRetries: number): Promise<T> {
+    let lastError: Error = new Error('Unknown error');
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        const msg = lastError.message.toLowerCase();
+        if (msg.includes('429') || msg.includes('rate_limited') || msg.includes('rate limit')) {
+          if (attempt < maxRetries) {
+            const backoff = Math.pow(2, attempt + 1) * 1000;
+            console.log(`[${this.name}] Rate limited, retry ${attempt + 1}/${maxRetries} after ${backoff}ms`);
+            await new Promise(r => setTimeout(r, backoff));
+            continue;
+          }
+        }
+        throw lastError;
+      }
+    }
+    throw lastError;
   }
 
   getQueueLength(): number {
-    return this.queue.length;
+    return this.pendingResolvers.length;
+  }
+
+  getActiveCount(): number {
+    return this.activeCount;
   }
 }
 
 // Singleton instances for different services
-export const braveRateLimiter = new RateLimiter({
-  requestsPerSecond: 0.33, // 1 request per 3 seconds — Brave free tier is strict
-  maxPerMinute: 10,        // Well under Brave's limit to avoid 429s during concurrent analyses
+// OpenAI: high concurrency — each request takes 5-60s, API supports thousands RPM on paid tiers
+export const openaiRateLimiter = new ConcurrentRateLimiter('openai', {
+  maxConcurrent: 150,
+  maxPerMinute: 500,
 });
 
-export const openaiRateLimiter = new RateLimiter({
-  requestsPerSecond: 5,
-  maxPerMinute: 200,
+// Shopify: moderate concurrency — REST API has bucket rate limiting (~40 req/s)
+export const shopifyRateLimiter = new ConcurrentRateLimiter('shopify', {
+  maxConcurrent: 20,
+  maxPerMinute: 80,
 });
 
-export const shopifyRateLimiter = new RateLimiter({
-  requestsPerSecond: 2,  // Shopify REST Admin API bucket rate
-  maxPerMinute: 80,      // Stay under Shopify's 120/min limit
+// Brave: low concurrency — free tier is very limited
+export const braveRateLimiter = new ConcurrentRateLimiter('brave', {
+  maxConcurrent: 5,
+  maxPerMinute: 15,
 });

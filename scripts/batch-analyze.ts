@@ -5,7 +5,11 @@
 //
 // Usage:
 //   npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts \
-//     --vendor "Artist Name" --status active --concurrency 2
+//     --vendor "Artist Name" --status active --concurrency 100
+//
+// Re-run failed products from a previous report:
+//   npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts \
+//     --failed-report reports/failed-products-2026-02-06.json
 //
 // Environment variables required:
 //   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
@@ -17,6 +21,20 @@ import { createClient } from '@supabase/supabase-js';
 import { runFullAnalysis, saveAnalysis, type SearchMode } from '@/lib/pricing-engine';
 import { updateVariantPrice } from '@/lib/shopify';
 import type { Product, Variant, Settings } from '@/types';
+import * as fs from 'fs';
+import * as path from 'path';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+interface FailedProduct {
+  productId: string;
+  variantId: string;
+  productTitle: string;
+  variantTitle: string;
+  error: string;
+  timestamp: string;
+}
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
@@ -29,6 +47,7 @@ function parseArgs(): {
   skipApply: boolean;
   limit: number;
   searchMode: SearchMode;
+  failedReport: string | null;
 } {
   const args = process.argv.slice(2);
   const get = (flag: string): string | null => {
@@ -43,11 +62,12 @@ function parseArgs(): {
   return {
     vendor: get('--vendor'),
     status: get('--status') || 'active',
-    concurrency: parseInt(get('--concurrency') || '2', 10),
+    concurrency: parseInt(get('--concurrency') || '100', 10),
     dryRun: has('--dry-run'),
     skipApply: has('--skip-apply'),
     limit: parseInt(get('--limit') || '0', 10),
     searchMode,
+    failedReport: get('--failed-report'),
   };
 }
 
@@ -64,12 +84,17 @@ function logError(msg: string) {
   console.error(`[${ts}] ERROR: ${msg}`);
 }
 
-function logProgress(done: number, total: number, failed: number, applied: number) {
+function logProgress(done: number, total: number, failed: number, applied: number, activeWorkers: number) {
   const pct = ((done / total) * 100).toFixed(1);
-  console.log(`\n${'='.repeat(60)}`);
+  const elapsed = ((Date.now() - globalStartTime) / 1000 / 60).toFixed(1);
+  const rate = done > 0 ? (done / ((Date.now() - globalStartTime) / 1000 / 60)).toFixed(1) : '0';
+  console.log(`\n${'='.repeat(70)}`);
   console.log(`  Progress: ${done}/${total} (${pct}%) | Failed: ${failed} | Applied: ${applied}`);
-  console.log(`${'='.repeat(60)}\n`);
+  console.log(`  Workers: ${activeWorkers} active | Rate: ${rate} products/min | Elapsed: ${elapsed}min`);
+  console.log(`${'='.repeat(70)}\n`);
 }
+
+let globalStartTime = Date.now();
 
 // ---------------------------------------------------------------------------
 // Fatal error patterns — stop the entire batch
@@ -150,17 +175,20 @@ async function processVariant(
 }
 
 // ---------------------------------------------------------------------------
-// Worker pool — process N variants concurrently
+// Worker pool — process N variants concurrently (streaming, no batch chunks)
 // ---------------------------------------------------------------------------
 async function runPool<T>(
   tasks: (() => Promise<T>)[],
   concurrency: number,
+  onFatalCheck?: () => boolean,
 ): Promise<T[]> {
   const results: T[] = new Array(tasks.length);
   let nextIdx = 0;
 
   async function worker() {
     while (nextIdx < tasks.length) {
+      // Check for fatal error before picking up next task
+      if (onFatalCheck?.()) break;
       const idx = nextIdx++;
       results[idx] = await tasks[idx]();
     }
@@ -175,22 +203,71 @@ async function runPool<T>(
 }
 
 // ---------------------------------------------------------------------------
+// Save failed products report
+// ---------------------------------------------------------------------------
+function saveFailedReport(failedProducts: FailedProduct[], startTime: number, totalProducts: number, applied: number) {
+  const reportsDir = path.join(process.cwd(), 'reports');
+  if (!fs.existsSync(reportsDir)) {
+    fs.mkdirSync(reportsDir, { recursive: true });
+  }
+
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const timeStr = new Date().toISOString().slice(11, 19).replace(/:/g, '-');
+  const reportPath = path.join(reportsDir, `failed-products-${dateStr}-${timeStr}.json`);
+
+  const report = {
+    generatedAt: new Date().toISOString(),
+    summary: {
+      totalProducts,
+      totalFailed: failedProducts.length,
+      totalApplied: applied,
+      elapsedMinutes: parseFloat(((Date.now() - startTime) / 1000 / 60).toFixed(1)),
+    },
+    // Variant IDs for easy re-running
+    failedVariantIds: failedProducts.map(f => f.variantId),
+    // Full details
+    failedProducts,
+  };
+
+  fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+  log(`Failed products report saved: ${reportPath}`);
+  log(`  ${failedProducts.length} failed products can be re-run with:`);
+  log(`  npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts --failed-report ${reportPath}`);
+
+  return reportPath;
+}
+
+// ---------------------------------------------------------------------------
+// Load failed products from a previous report for re-running
+// ---------------------------------------------------------------------------
+function loadFailedReport(reportPath: string): { productId: string; variantId: string }[] {
+  const raw = fs.readFileSync(reportPath, 'utf8');
+  const report = JSON.parse(raw);
+  return (report.failedProducts || []).map((f: FailedProduct) => ({
+    productId: f.productId,
+    variantId: f.variantId,
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 async function main() {
   const opts = parseArgs();
+  globalStartTime = Date.now();
 
-  console.log('\n' + '='.repeat(60));
-  console.log('  Oil Slick Pad — Batch Price Analyzer');
-  console.log('='.repeat(60));
+  console.log('\n' + '='.repeat(70));
+  console.log('  Oil Slick Pad — Batch Price Analyzer (High-Concurrency)');
+  console.log('='.repeat(70));
   console.log(`  Vendor filter: ${opts.vendor || 'ALL'}`);
   console.log(`  Status filter: ${opts.status}`);
-  console.log(`  Concurrency:   ${opts.concurrency}`);
+  console.log(`  Concurrency:   ${opts.concurrency} workers`);
   console.log(`  Dry run:       ${opts.dryRun}`);
   console.log(`  Skip apply:    ${opts.skipApply}`);
   console.log(`  Search mode:   ${opts.searchMode}`);
   console.log(`  Limit:         ${opts.limit || 'none'}`);
-  console.log('='.repeat(60) + '\n');
+  console.log(`  Failed report: ${opts.failedReport || 'none'}`);
+  console.log('='.repeat(70) + '\n');
 
   // Validate env vars
   const requiredEnv = [
@@ -232,52 +309,88 @@ async function main() {
   settings.ai_unrestricted = true;
   log('AI Unrestricted Mode: ENABLED');
 
-  // Query products + variants
-  log('Loading products from database...');
+  // ---------------------------------------------------------------------------
+  // Determine which variants to process
+  // ---------------------------------------------------------------------------
+  let toProcess: { product: Product; variant: Variant }[] = [];
 
-  let query = db
-    .from('products')
-    .select('*, variants(*)')
-    .order('title');
+  if (opts.failedReport) {
+    // Re-run mode: load failed products from report
+    log(`Loading failed products from report: ${opts.failedReport}`);
+    const failedEntries = loadFailedReport(opts.failedReport);
+    log(`Found ${failedEntries.length} failed products to retry`);
 
-  if (opts.vendor) {
-    query = query.ilike('vendor', opts.vendor);
-  }
-  if (opts.status !== 'all') {
-    query = query.eq('status', opts.status);
-  }
+    // Load the specific products and variants from DB
+    const variantIds = failedEntries.map(f => f.variantId);
+    const productIds = [...new Set(failedEntries.map(f => f.productId))];
 
-  // Supabase default limit is 1000, paginate if needed
-  const allProducts: Product[] = [];
-  let page = 0;
-  const pageSize = 500;
+    const { data: products } = await db
+      .from('products')
+      .select('*, variants(*)')
+      .in('id', productIds);
 
-  while (true) {
-    const { data, error } = await query.range(page * pageSize, (page + 1) * pageSize - 1);
-    if (error) {
-      logError(`Failed to load products: ${error.message}`);
-      process.exit(1);
+    if (products) {
+      const variantIdSet = new Set(variantIds);
+      for (const product of products as Product[]) {
+        if (!product.variants) continue;
+        for (const variant of product.variants) {
+          if (variantIdSet.has(variant.id)) {
+            toProcess.push({ product, variant });
+          }
+        }
+      }
     }
-    if (!data || data.length === 0) break;
-    allProducts.push(...(data as Product[]));
-    if (data.length < pageSize) break;
-    page++;
-  }
 
-  // Flatten to variant list
-  const variantList: { product: Product; variant: Variant }[] = [];
-  for (const product of allProducts) {
-    if (!product.variants || product.variants.length === 0) continue;
-    for (const variant of product.variants) {
-      variantList.push({ product, variant });
+    log(`Loaded ${toProcess.length} variants for retry`);
+  } else {
+    // Normal mode: query products + variants
+    log('Loading products from database...');
+
+    let query = db
+      .from('products')
+      .select('*, variants(*)')
+      .order('title');
+
+    if (opts.vendor) {
+      query = query.ilike('vendor', opts.vendor);
     }
+    if (opts.status !== 'all') {
+      query = query.eq('status', opts.status);
+    }
+
+    // Supabase default limit is 1000, paginate if needed
+    const allProducts: Product[] = [];
+    let page = 0;
+    const pageSize = 500;
+
+    while (true) {
+      const { data, error } = await query.range(page * pageSize, (page + 1) * pageSize - 1);
+      if (error) {
+        logError(`Failed to load products: ${error.message}`);
+        process.exit(1);
+      }
+      if (!data || data.length === 0) break;
+      allProducts.push(...(data as Product[]));
+      if (data.length < pageSize) break;
+      page++;
+    }
+
+    // Flatten to variant list
+    const variantList: { product: Product; variant: Variant }[] = [];
+    for (const product of allProducts) {
+      if (!product.variants || product.variants.length === 0) continue;
+      for (const variant of product.variants) {
+        variantList.push({ product, variant });
+      }
+    }
+
+    // Apply limit if set
+    toProcess = opts.limit > 0 ? variantList.slice(0, opts.limit) : variantList;
+
+    log(`Found ${allProducts.length} products, ${variantList.length} variants total`);
   }
 
-  // Apply limit if set
-  const toProcess = opts.limit > 0 ? variantList.slice(0, opts.limit) : variantList;
-
-  log(`Found ${allProducts.length} products, ${variantList.length} variants total`);
-  log(`Processing ${toProcess.length} variants\n`);
+  log(`Processing ${toProcess.length} variants with ${opts.concurrency} concurrent workers\n`);
 
   if (toProcess.length === 0) {
     log('Nothing to process. Exiting.');
@@ -286,74 +399,99 @@ async function main() {
 
   // Log to activity_log
   await db.from('activity_log').insert({
-    message: `GitHub Actions batch started: ${toProcess.length} variants${opts.vendor ? ` (vendor: ${opts.vendor})` : ''}, AI unlimited, auto-apply${opts.dryRun ? ' (DRY RUN)' : ''}`,
+    message: `Batch started: ${toProcess.length} variants, ${opts.concurrency} workers${opts.vendor ? ` (vendor: ${opts.vendor})` : ''}${opts.failedReport ? ' (retry mode)' : ''}, AI unlimited, auto-apply${opts.dryRun ? ' (DRY RUN)' : ''}`,
     type: 'info',
   });
 
-  // Process in small batches with concurrency
+  // ---------------------------------------------------------------------------
+  // Process all variants with streaming worker pool
+  // ---------------------------------------------------------------------------
   let completed = 0;
   let failed = 0;
   let applied = 0;
   let fatalError: string | null = null;
-  const batchSize = Math.max(opts.concurrency * 2, 4);
-  const startTime = Date.now();
+  let activeWorkers = 0;
+  const failedProducts: FailedProduct[] = [];
+  const progressInterval = Math.max(1, Math.floor(toProcess.length / 20)); // Report ~20 times
 
-  for (let i = 0; i < toProcess.length; i += batchSize) {
-    if (fatalError) {
-      log(`FATAL ERROR detected — skipping remaining variants`);
-      break;
+  const tasks = toProcess.map(({ product, variant }) => async () => {
+    if (fatalError) return { success: false, applied: false, price: null, error: 'Skipped (fatal error)' };
+
+    activeWorkers++;
+    const result = await processVariant(product, variant, settings, db, {
+      dryRun: opts.dryRun,
+      skipApply: opts.skipApply,
+      searchMode: opts.searchMode,
+    });
+    activeWorkers--;
+
+    // Update counters
+    if (result.success) {
+      completed++;
+    } else {
+      failed++;
+      failedProducts.push({
+        productId: product.id,
+        variantId: variant.id,
+        productTitle: product.title,
+        variantTitle: variant.title || 'Default',
+        error: result.error || 'Unknown error',
+        timestamp: new Date().toISOString(),
+      });
+    }
+    if (result.applied) applied++;
+
+    // Check for fatal errors
+    if (result.error && isFatal(result.error)) {
+      fatalError = result.error;
+      logError(`FATAL: ${fatalError}`);
     }
 
-    const batch = toProcess.slice(i, i + batchSize);
-    const tasks = batch.map(({ product, variant }) => () =>
-      processVariant(product, variant, settings, db, {
-        dryRun: opts.dryRun,
-        skipApply: opts.skipApply,
-        searchMode: opts.searchMode,
-      }),
-    );
-
-    const results = await runPool(tasks, opts.concurrency);
-
-    for (const result of results) {
-      if (result.success) {
-        completed++;
-      } else {
-        failed++;
-        if (result.error && isFatal(result.error)) {
-          fatalError = result.error;
-          logError(`FATAL: ${fatalError}`);
-        }
-      }
-      if (result.applied) applied++;
+    // Periodic progress reporting
+    const total = completed + failed;
+    if (total % progressInterval === 0 || total === toProcess.length) {
+      logProgress(total, toProcess.length, failed, applied, activeWorkers);
     }
 
-    logProgress(completed + failed, toProcess.length, failed, applied);
+    return result;
+  });
 
-    // Brief pause between batches to let rate limiters breathe
-    if (i + batchSize < toProcess.length && !fatalError) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
+  await runPool(tasks, opts.concurrency, () => !!fatalError);
 
+  // ---------------------------------------------------------------------------
   // Summary
-  const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
-  console.log('\n' + '='.repeat(60));
+  // ---------------------------------------------------------------------------
+  const elapsed = ((Date.now() - globalStartTime) / 1000 / 60).toFixed(1);
+  const rate = (completed + failed) > 0
+    ? ((completed + failed) / ((Date.now() - globalStartTime) / 1000 / 60)).toFixed(1)
+    : '0';
+
+  console.log('\n' + '='.repeat(70));
   console.log('  BATCH COMPLETE');
-  console.log('='.repeat(60));
-  console.log(`  Total:     ${toProcess.length}`);
-  console.log(`  Completed: ${completed}`);
-  console.log(`  Failed:    ${failed}`);
-  console.log(`  Applied:   ${applied}`);
-  console.log(`  Elapsed:   ${elapsed} minutes`);
+  console.log('='.repeat(70));
+  console.log(`  Total:       ${toProcess.length}`);
+  console.log(`  Completed:   ${completed}`);
+  console.log(`  Failed:      ${failed}`);
+  console.log(`  Applied:     ${applied}`);
+  console.log(`  Concurrency: ${opts.concurrency} workers`);
+  console.log(`  Rate:        ${rate} products/min`);
+  console.log(`  Elapsed:     ${elapsed} minutes`);
   if (fatalError) {
-    console.log(`  FATAL:     ${fatalError}`);
+    console.log(`  FATAL:       ${fatalError}`);
   }
-  console.log('='.repeat(60) + '\n');
+  console.log('='.repeat(70) + '\n');
+
+  // Save failed products report if there were failures
+  let reportPath: string | null = null;
+  if (failedProducts.length > 0) {
+    reportPath = saveFailedReport(failedProducts, globalStartTime, toProcess.length, applied);
+  } else {
+    log('No failed products — all variants processed successfully!');
+  }
 
   // Log final result to activity_log
   await db.from('activity_log').insert({
-    message: `GitHub Actions batch finished: ${completed} analyzed, ${failed} failed, ${applied} applied in ${elapsed}min${fatalError ? ` (FATAL: ${fatalError})` : ''}`,
+    message: `Batch finished: ${completed} analyzed, ${failed} failed, ${applied} applied in ${elapsed}min (${rate}/min, ${opts.concurrency} workers)${fatalError ? ` (FATAL: ${fatalError})` : ''}${reportPath ? ` — failed report: ${path.basename(reportPath)}` : ''}`,
     type: fatalError ? 'error' : 'success',
   });
 

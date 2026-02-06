@@ -29,6 +29,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# batch analysis reports (contain product data)
+/reports
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
