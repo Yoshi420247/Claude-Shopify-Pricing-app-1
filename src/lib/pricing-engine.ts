@@ -4,7 +4,10 @@
 
 import { chatCompletion, parseAIJson } from './openai';
 import { searchCompetitors, type CompetitorSearchResult } from './competitors';
+import { searchCompetitorsOpenAI } from './openai-search';
 import { createServerClient } from './supabase';
+
+export type SearchMode = 'brave' | 'openai' | 'none';
 import {
   analyzeCompetitorIntelligence,
   calculateOptimalPrice,
@@ -568,7 +571,8 @@ export async function runFullAnalysis(
   product: Product,
   variant: Variant,
   settings: Settings,
-  onProgress?: (step: string) => void
+  onProgress?: (step: string) => void,
+  searchMode: SearchMode = 'brave'
 ): Promise<{
   suggestedPrice: number | null;
   confidence: string | null;
@@ -592,13 +596,25 @@ export async function runFullAnalysis(
     onProgress?.('Identifying product...');
     const identity = await identifyProduct(product, variant, model);
 
-    // Step 2: Search competitors (multi-attempt with broadening)
-    onProgress?.('Searching competitors...');
-    let competitorData = await searchCompetitors(
-      { title: product.title, vendor: product.vendor, productType: product.product_type },
-      identity,
-      3
-    );
+    // Step 2: Search competitors
+    let competitorData: CompetitorSearchResult;
+    if (searchMode === 'openai') {
+      onProgress?.('Searching competitors (OpenAI web search)...');
+      competitorData = await searchCompetitorsOpenAI(
+        { title: product.title, vendor: product.vendor, productType: product.product_type },
+        identity,
+      );
+    } else if (searchMode === 'none') {
+      onProgress?.('Skipping competitor search...');
+      competitorData = { competitors: [], rawResults: [], excluded: [], queries: [] };
+    } else {
+      onProgress?.('Searching competitors (Brave)...');
+      competitorData = await searchCompetitors(
+        { title: product.title, vendor: product.vendor, productType: product.product_type },
+        identity,
+        3
+      );
+    }
 
     // Step 3: AI pricing analysis
     onProgress?.('Analyzing pricing...');
@@ -611,18 +627,26 @@ export async function runFullAnalysis(
     const hasInsufficientData = (analysis.competitorAnalysis?.retailCount || 0) < 2;
     const hasLowConfidence = analysis.confidence === 'low';
 
-    if (hasInsufficientData && competitorData.queries.length > 0) {
+    if (hasInsufficientData && searchMode !== 'none' && competitorData.queries.length > 0) {
       onProgress?.('AI reflection on search strategy...');
       const newQueries = await reflectAndRetry(product, identity, competitorData.queries, model);
 
       if (newQueries.length > 0) {
         onProgress?.('Retrying with AI-suggested searches...');
-        const { searchCompetitors: sc } = await import('./competitors');
-        const retryData = await sc(
-          { title: product.title, vendor: product.vendor, productType: product.product_type },
-          { ...identity, searchQueries: newQueries },
-          1
-        );
+        let retryData: CompetitorSearchResult;
+        if (searchMode === 'openai') {
+          retryData = await searchCompetitorsOpenAI(
+            { title: product.title, vendor: product.vendor, productType: product.product_type },
+            { ...identity, searchQueries: newQueries },
+          );
+        } else {
+          const { searchCompetitors: sc } = await import('./competitors');
+          retryData = await sc(
+            { title: product.title, vendor: product.vendor, productType: product.product_type },
+            { ...identity, searchQueries: newQueries },
+            1
+          );
+        }
 
         // Merge new results
         for (const comp of retryData.competitors) {
