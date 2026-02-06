@@ -35,7 +35,17 @@ async function shopifyFetch(path: string, options: RequestInit = {}) {
     throw new Error(`Shopify API error ${res.status}: ${body}`);
   }
 
-  return res.json();
+  const json = await res.json();
+
+  // Shopify REST API can return HTTP 200 with errors in the body
+  if (json.errors) {
+    const errorDetail = typeof json.errors === 'string'
+      ? json.errors
+      : JSON.stringify(json.errors);
+    throw new Error(`Shopify API returned errors: ${errorDetail}`);
+  }
+
+  return json;
 }
 
 async function shopifyGraphQL(query: string, variables: Record<string, unknown> = {}) {
@@ -187,13 +197,31 @@ export async function fetchAllProducts() {
 
 // Update a variant's price (rate-limited for safe batch processing)
 export async function updateVariantPrice(variantId: string, newPrice: number) {
-  return shopifyRateLimiter.execute(() =>
+  const expectedPrice = newPrice.toFixed(2);
+
+  const response = await shopifyRateLimiter.execute(() =>
     shopifyFetch(`variants/${variantId}.json`, {
       method: 'PUT',
       body: JSON.stringify({
-        variant: { id: parseInt(variantId), price: newPrice.toFixed(2) },
+        variant: { id: parseInt(variantId), price: expectedPrice },
       }),
     }), 3);
+
+  // Verify the response contains the updated variant with the correct price
+  const returnedPrice = response?.variant?.price;
+  if (!returnedPrice) {
+    throw new Error(
+      `Shopify price update failed for variant ${variantId}: no variant returned in response`
+    );
+  }
+
+  if (returnedPrice !== expectedPrice) {
+    throw new Error(
+      `Shopify price mismatch for variant ${variantId}: sent ${expectedPrice}, got back ${returnedPrice}`
+    );
+  }
+
+  return response;
 }
 
 // Test the Shopify connection
