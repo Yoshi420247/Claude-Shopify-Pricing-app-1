@@ -14,7 +14,7 @@
 // =============================================================================
 
 import { createClient } from '@supabase/supabase-js';
-import { runFullAnalysis, saveAnalysis } from '@/lib/pricing-engine';
+import { runFullAnalysis, saveAnalysis, type SearchMode } from '@/lib/pricing-engine';
 import { updateVariantPrice } from '@/lib/shopify';
 import type { Product, Variant, Settings } from '@/types';
 
@@ -28,6 +28,7 @@ function parseArgs(): {
   dryRun: boolean;
   skipApply: boolean;
   limit: number;
+  searchMode: SearchMode;
 } {
   const args = process.argv.slice(2);
   const get = (flag: string): string | null => {
@@ -36,6 +37,9 @@ function parseArgs(): {
   };
   const has = (flag: string): boolean => args.includes(flag);
 
+  const rawSearch = get('--search-mode') || 'openai';
+  const searchMode: SearchMode = rawSearch === 'brave' ? 'brave' : rawSearch === 'none' ? 'none' : 'openai';
+
   return {
     vendor: get('--vendor'),
     status: get('--status') || 'active',
@@ -43,6 +47,7 @@ function parseArgs(): {
     dryRun: has('--dry-run'),
     skipApply: has('--skip-apply'),
     limit: parseInt(get('--limit') || '0', 10),
+    searchMode,
   };
 }
 
@@ -91,7 +96,7 @@ async function processVariant(
   variant: Variant,
   settings: Settings,
   db: ReturnType<typeof createClient>,
-  opts: { dryRun: boolean; skipApply: boolean },
+  opts: { dryRun: boolean; skipApply: boolean; searchMode: SearchMode },
 ): Promise<{ success: boolean; applied: boolean; price: number | null; error: string | null }> {
   const label = `${product.title} / ${variant.title || 'Default'} (${variant.id})`;
 
@@ -99,7 +104,7 @@ async function processVariant(
     log(`Analyzing: ${label}`);
     const result = await runFullAnalysis(product, variant, settings, (step) => {
       log(`  ${step}`);
-    });
+    }, opts.searchMode);
 
     if (result.error) {
       logError(`Analysis failed for ${label}: ${result.error}`);
@@ -183,6 +188,7 @@ async function main() {
   console.log(`  Concurrency:   ${opts.concurrency}`);
   console.log(`  Dry run:       ${opts.dryRun}`);
   console.log(`  Skip apply:    ${opts.skipApply}`);
+  console.log(`  Search mode:   ${opts.searchMode}`);
   console.log(`  Limit:         ${opts.limit || 'none'}`);
   console.log('='.repeat(60) + '\n');
 
@@ -191,10 +197,13 @@ async function main() {
     'NEXT_PUBLIC_SUPABASE_URL',
     'SUPABASE_SERVICE_ROLE_KEY',
     'OPENAI_API_KEY',
-    'BRAVE_API_KEY',
     'SHOPIFY_STORE_NAME',
     'SHOPIFY_ACCESS_TOKEN',
   ];
+  // Only require BRAVE_API_KEY when using brave search mode
+  if (opts.searchMode === 'brave') {
+    requiredEnv.push('BRAVE_API_KEY');
+  }
   const missing = requiredEnv.filter(k => !process.env[k]);
   if (missing.length > 0) {
     logError(`Missing environment variables: ${missing.join(', ')}`);
@@ -300,6 +309,7 @@ async function main() {
       processVariant(product, variant, settings, db, {
         dryRun: opts.dryRun,
         skipApply: opts.skipApply,
+        searchMode: opts.searchMode,
       }),
     );
 
