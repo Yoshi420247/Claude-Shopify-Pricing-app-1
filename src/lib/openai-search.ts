@@ -94,8 +94,6 @@ Return at least 2-5 competitor prices if available. If no exact matches exist, i
           tools: [{ type: 'web_search' }],
           tool_choice: 'required',
           input: searchPrompt,
-          reasoning: { effort: 'low' },
-          text: { format: { type: 'json_object' } },
         }),
       });
 
