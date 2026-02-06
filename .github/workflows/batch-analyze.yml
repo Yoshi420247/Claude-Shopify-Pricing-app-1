@@ -18,16 +18,10 @@ on:
           - all
         default: 'active'
       concurrency:
-        description: 'Number of parallel analyses (1-5)'
+        description: 'Number of parallel workers (recommended: 50-200)'
         required: true
-        type: choice
-        options:
-          - '1'
-          - '2'
-          - '3'
-          - '4'
-          - '5'
-        default: '2'
+        type: string
+        default: '100'
       search_mode:
         description: 'Web search provider for competitor research'
         required: true
@@ -52,7 +46,7 @@ jobs:
   analyze:
     name: Run Batch Analysis
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours max
+    timeout-minutes: 120  # 2 hours max (should finish in ~30min with 100 workers)
 
     steps:
       - name: Checkout code
@@ -76,6 +70,8 @@ jobs:
           BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
           SHOPIFY_STORE_NAME: ${{ secrets.SHOPIFY_STORE_NAME }}
           SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+          # Increase Node.js memory for high concurrency
+          NODE_OPTIONS: '--max-old-space-size=4096'
         run: |
           ARGS="--status ${{ inputs.status }} --concurrency ${{ inputs.concurrency }} --search-mode ${{ inputs.search_mode }}"
 
@@ -93,3 +89,12 @@ jobs:
 
           echo "Running: npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts $ARGS"
           eval npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts $ARGS
+
+      - name: Upload failed products report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-products-report
+          path: reports/failed-products-*.json
+          if-no-files-found: ignore
+          retention-days: 30
