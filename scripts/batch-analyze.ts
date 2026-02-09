@@ -52,6 +52,7 @@ function parseArgs(): {
   limit: number;
   searchMode: SearchMode;
   failedReport: string | null;
+  markup: number | null;
 } {
   const args = process.argv.slice(2);
   const get = (flag: string): string | null => {
@@ -63,6 +64,13 @@ function parseArgs(): {
   const rawSearch = get('--search-mode') || 'openai';
   const searchMode: SearchMode = rawSearch === 'brave' ? 'brave' : rawSearch === 'none' ? 'none' : 'openai';
 
+  const rawMarkup = get('--markup');
+  const markup = rawMarkup ? parseFloat(rawMarkup) : null;
+  if (markup !== null && (isNaN(markup) || markup <= 0)) {
+    console.error('ERROR: --markup must be a positive number (e.g. 3 for 3x cost)');
+    process.exit(1);
+  }
+
   return {
     vendor: get('--vendor'),
     status: get('--status') || 'active',
@@ -73,6 +81,7 @@ function parseArgs(): {
     limit: parseInt(get('--limit') || '0', 10),
     searchMode,
     failedReport: get('--failed-report'),
+    markup,
   };
 }
 
@@ -180,6 +189,79 @@ async function processVariant(
 }
 
 // ---------------------------------------------------------------------------
+// Process a single variant with simple cost markup (no AI calls)
+// ---------------------------------------------------------------------------
+async function processVariantMarkup(
+  product: Product,
+  variant: Variant,
+  multiplier: number,
+  db: ReturnType<typeof createClient>,
+  opts: { dryRun: boolean; skipApply: boolean },
+): Promise<{ success: boolean; applied: boolean; price: number | null; error: string | null }> {
+  const label = `${product.title} / ${variant.title || 'Default'} (${variant.id})`;
+
+  if (variant.cost === null || variant.cost === undefined || variant.cost <= 0) {
+    logError(`${label}: No cost data — cannot apply markup`);
+    return { success: false, applied: false, price: null, error: 'No cost data on variant' };
+  }
+
+  const price = Math.round(variant.cost * multiplier * 100) / 100;
+  log(`Markup: ${label} — cost $${variant.cost.toFixed(2)} × ${multiplier} = $${price.toFixed(2)}`);
+
+  // Save analysis record so --skip-analyzed works on future runs
+  try {
+    await db.from('analyses').upsert({
+      product_id: product.id,
+      variant_id: variant.id,
+      suggested_price: price,
+      confidence: 'high',
+      confidence_reason: `Simple ${multiplier}x cost markup`,
+      summary: `Price set to ${multiplier}x cost ($${variant.cost.toFixed(2)} × ${multiplier} = $${price.toFixed(2)}). No AI analysis performed.`,
+      reasoning: [`Cost: $${variant.cost.toFixed(2)}`, `Multiplier: ${multiplier}x`, `Result: $${price.toFixed(2)}`],
+      market_position: null,
+      price_floor: variant.cost,
+      price_ceiling: variant.compare_at_price || null,
+      product_identity: null,
+      competitor_analysis: null,
+      search_queries: [],
+      was_deliberated: false,
+      was_reflection_retried: false,
+      applied: false,
+      error: null,
+      analyzed_at: new Date().toISOString(),
+    }, { onConflict: 'variant_id' });
+  } catch (dbErr) {
+    const msg = dbErr instanceof Error ? dbErr.message : 'DB save failed';
+    logError(`${label}: Failed to save analysis: ${msg}`);
+  }
+
+  // Apply price
+  if (!opts.dryRun && !opts.skipApply) {
+    try {
+      await updateVariantPrice(variant.id, price);
+      await db.from('variants').update({ price }).eq('id', variant.id);
+      await db
+        .from('analyses')
+        .update({ applied: true, applied_at: new Date().toISOString() })
+        .match({ product_id: product.id, variant_id: variant.id });
+
+      log(`  APPLIED: $${variant.price.toFixed(2)} -> $${price.toFixed(2)}`);
+      return { success: true, applied: true, price, error: null };
+    } catch (applyErr) {
+      const msg = applyErr instanceof Error ? applyErr.message : 'Apply failed';
+      logError(`  Apply failed: ${msg}`);
+      return { success: true, applied: false, price, error: `Apply failed: ${msg}` };
+    }
+  }
+
+  if (opts.dryRun) {
+    log(`  DRY RUN: Would apply $${price.toFixed(2)}`);
+  }
+
+  return { success: true, applied: false, price, error: null };
+}
+
+// ---------------------------------------------------------------------------
 // Worker pool — process N variants concurrently (streaming, no batch chunks)
 // ---------------------------------------------------------------------------
 async function runPool<T>(
@@ -273,6 +355,7 @@ async function main() {
   console.log(`  Search mode:    ${opts.searchMode}`);
   console.log(`  Limit:          ${opts.limit || 'none'}`);
   console.log(`  Failed report:  ${opts.failedReport || 'none'}`);
+  console.log(`  Markup:         ${opts.markup ? `${opts.markup}x cost (skip AI)` : 'none (use AI)'}`);
   console.log('='.repeat(70) + '\n');
 
   // Validate env vars
@@ -446,7 +529,7 @@ async function main() {
 
   // Log to activity_log
   await db.from('activity_log').insert({
-    message: `Batch started: ${toProcess.length} variants, ${opts.concurrency} workers${opts.vendor ? ` (vendor: ${opts.vendor})` : ''}${opts.failedReport ? ' (retry mode)' : ''}${opts.skipAnalyzed ? ' (skip-analyzed)' : ''}, AI unlimited, auto-apply${opts.dryRun ? ' (DRY RUN)' : ''}`,
+    message: `Batch started: ${toProcess.length} variants, ${opts.concurrency} workers${opts.vendor ? ` (vendor: ${opts.vendor})` : ''}${opts.failedReport ? ' (retry mode)' : ''}${opts.skipAnalyzed ? ' (skip-analyzed)' : ''}${opts.markup ? ` (${opts.markup}x markup)` : ', AI unlimited'}, auto-apply${opts.dryRun ? ' (DRY RUN)' : ''}`,
     type: 'info',
   });
 
@@ -465,11 +548,16 @@ async function main() {
     if (fatalError) return { success: false, applied: false, price: null, error: 'Skipped (fatal error)' };
 
     activeWorkers++;
-    const result = await processVariant(product, variant, settings, db, {
-      dryRun: opts.dryRun,
-      skipApply: opts.skipApply,
-      searchMode: opts.searchMode,
-    });
+    const result = opts.markup
+      ? await processVariantMarkup(product, variant, opts.markup, db, {
+          dryRun: opts.dryRun,
+          skipApply: opts.skipApply,
+        })
+      : await processVariant(product, variant, settings, db, {
+          dryRun: opts.dryRun,
+          skipApply: opts.skipApply,
+          searchMode: opts.searchMode,
+        });
     activeWorkers--;
 
     // Update counters

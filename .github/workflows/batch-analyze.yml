@@ -46,6 +46,11 @@ on:
         required: true
         type: boolean
         default: false
+      markup:
+        description: 'Simple cost markup multiplier (e.g. 3 = 3x cost). Skips AI — no OpenAI costs.'
+        required: false
+        type: string
+        default: ''
       failed_report:
         description: 'Re-run failed products from report file (e.g. failed-products-2026-02-06-21-29-46.json)'
         required: false
@@ -100,6 +105,10 @@ jobs:
 
           if [ "${{ inputs.skip_analyzed }}" = "true" ]; then
             ARGS="$ARGS --skip-analyzed"
+          fi
+
+          if [ -n "${{ inputs.markup }}" ]; then
+            ARGS="$ARGS --markup ${{ inputs.markup }}"
           fi
 
           if [ "${{ inputs.dry_run }}" = "true" ]; then
