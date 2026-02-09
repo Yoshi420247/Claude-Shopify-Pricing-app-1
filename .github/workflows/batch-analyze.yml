@@ -22,8 +22,16 @@ on:
         required: true
         type: string
         default: '100'
+      provider:
+        description: 'AI provider for search + reasoning'
+        required: true
+        type: choice
+        options:
+          - openai
+          - claude
+        default: 'openai'
       search_mode:
-        description: 'Web search provider for competitor research'
+        description: 'Search strategy for competitor research'
         required: true
         type: choice
         options:
@@ -48,7 +56,7 @@ on:
         type: boolean
         default: false
       markup:
-        description: 'Simple cost markup multiplier (e.g. 3 = 3x cost). Skips AI — no OpenAI costs.'
+        description: 'Simple cost markup multiplier (e.g. 3 = 3x cost). Skips AI — no API costs.'
         required: false
         type: string
         default: ''
@@ -83,17 +91,18 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
           SHOPIFY_STORE_NAME: ${{ secrets.SHOPIFY_STORE_NAME }}
           SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
           # Increase Node.js memory for high concurrency
           NODE_OPTIONS: '--max-old-space-size=4096'
         run: |
-          ARGS="--status ${{ inputs.status }} --concurrency ${{ inputs.concurrency }} --search-mode ${{ inputs.search_mode }}"
+          ARGS="--status ${{ inputs.status }} --concurrency ${{ inputs.concurrency }} --search-mode ${{ inputs.search_mode }} --provider ${{ inputs.provider }}"
 
           if [ -n "${{ inputs.failed_report }}" ]; then
             # Re-run mode: only process previously failed products
-            ARGS="--failed-report ${{ inputs.failed_report }} --concurrency ${{ inputs.concurrency }} --search-mode ${{ inputs.search_mode }}"
+            ARGS="--failed-report ${{ inputs.failed_report }} --concurrency ${{ inputs.concurrency }} --search-mode ${{ inputs.search_mode }} --provider ${{ inputs.provider }}"
           else
             if [ -n "${{ inputs.vendor }}" ]; then
               ARGS="$ARGS --vendor \"${{ inputs.vendor }}\""

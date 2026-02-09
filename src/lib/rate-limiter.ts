@@ -113,3 +113,9 @@ export const braveRateLimiter = new ConcurrentRateLimiter('brave', {
   maxConcurrent: 5,
   maxPerMinute: 15,
 });
+
+// Claude (Anthropic): high concurrency — similar to OpenAI paid tiers
+export const claudeRateLimiter = new ConcurrentRateLimiter('claude', {
+  maxConcurrent: 150,
+  maxPerMinute: 500,
+});

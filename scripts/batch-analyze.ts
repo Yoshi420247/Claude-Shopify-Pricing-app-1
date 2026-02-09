@@ -21,7 +21,7 @@
 // =============================================================================
 
 import { createClient } from '@supabase/supabase-js';
-import { runFullAnalysis, saveAnalysis, type SearchMode } from '@/lib/pricing-engine';
+import { runFullAnalysis, saveAnalysis, type SearchMode, type Provider } from '@/lib/pricing-engine';
 import { updateVariantPrice } from '@/lib/shopify';
 import type { Product, Variant, Settings } from '@/types';
 import * as fs from 'fs';
@@ -51,6 +51,7 @@ function parseArgs(): {
   skipAnalyzed: boolean;
   limit: number;
   searchMode: SearchMode;
+  provider: Provider;
   failedReport: string | null;
   markup: number | null;
 } {
@@ -71,6 +72,9 @@ function parseArgs(): {
     process.exit(1);
   }
 
+  const rawProvider = get('--provider') || 'openai';
+  const provider: Provider = rawProvider === 'claude' ? 'claude' : 'openai';
+
   return {
     vendor: get('--vendor'),
     status: get('--status') || 'active',
@@ -80,6 +84,7 @@ function parseArgs(): {
     skipAnalyzed: has('--skip-analyzed'),
     limit: parseInt(get('--limit') || '0', 10),
     searchMode,
+    provider,
     failedReport: get('--failed-report'),
     markup,
   };
@@ -135,7 +140,7 @@ async function processVariant(
   variant: Variant,
   settings: Settings,
   db: ReturnType<typeof createClient>,
-  opts: { dryRun: boolean; skipApply: boolean; searchMode: SearchMode },
+  opts: { dryRun: boolean; skipApply: boolean; searchMode: SearchMode; provider: Provider },
 ): Promise<{ success: boolean; applied: boolean; price: number | null; error: string | null }> {
   const label = `${product.title} / ${variant.title || 'Default'} (${variant.id})`;
 
@@ -143,7 +148,7 @@ async function processVariant(
     log(`Analyzing: ${label}`);
     const result = await runFullAnalysis(product, variant, settings, (step) => {
       log(`  ${step}`);
-    }, opts.searchMode);
+    }, opts.searchMode, opts.provider);
 
     if (result.error) {
       logError(`Analysis failed for ${label}: ${result.error}`);
@@ -353,6 +358,7 @@ async function main() {
   console.log(`  Skip apply:     ${opts.skipApply}`);
   console.log(`  Skip analyzed:  ${opts.skipAnalyzed}`);
   console.log(`  Search mode:    ${opts.searchMode}`);
+  console.log(`  AI Provider:    ${opts.provider.toUpperCase()}`);
   console.log(`  Limit:          ${opts.limit || 'none'}`);
   console.log(`  Failed report:  ${opts.failedReport || 'none'}`);
   console.log(`  Markup:         ${opts.markup ? `${opts.markup}x cost (skip AI)` : 'none (use AI)'}`);
@@ -365,9 +371,13 @@ async function main() {
     'SHOPIFY_STORE_NAME',
     'SHOPIFY_ACCESS_TOKEN',
   ];
-  // Only require OPENAI_API_KEY when NOT using pure markup mode
+  // Only require API keys when NOT using pure markup mode
   if (!opts.markup) {
-    requiredEnv.push('OPENAI_API_KEY');
+    if (opts.provider === 'claude') {
+      requiredEnv.push('ANTHROPIC_API_KEY');
+    } else {
+      requiredEnv.push('OPENAI_API_KEY');
+    }
   }
   // Only require BRAVE_API_KEY when using brave search mode
   if (opts.searchMode === 'brave') {
@@ -532,7 +542,7 @@ async function main() {
 
   // Log to activity_log
   await db.from('activity_log').insert({
-    message: `Batch started: ${toProcess.length} variants, ${opts.concurrency} workers${opts.vendor ? ` (vendor: ${opts.vendor})` : ''}${opts.failedReport ? ' (retry mode)' : ''}${opts.skipAnalyzed ? ' (skip-analyzed)' : ''}${opts.markup ? ` (${opts.markup}x markup)` : ', AI unlimited'}, auto-apply${opts.dryRun ? ' (DRY RUN)' : ''}`,
+    message: `Batch started: ${toProcess.length} variants, ${opts.concurrency} workers, ${opts.provider.toUpperCase()}${opts.vendor ? ` (vendor: ${opts.vendor})` : ''}${opts.failedReport ? ' (retry mode)' : ''}${opts.skipAnalyzed ? ' (skip-analyzed)' : ''}${opts.markup ? ` (${opts.markup}x markup)` : ', AI unlimited'}, auto-apply${opts.dryRun ? ' (DRY RUN)' : ''}`,
     type: 'info',
   });
 
@@ -560,6 +570,7 @@ async function main() {
           dryRun: opts.dryRun,
           skipApply: opts.skipApply,
           searchMode: opts.searchMode,
+          provider: opts.provider,
         });
     activeWorkers--;
 

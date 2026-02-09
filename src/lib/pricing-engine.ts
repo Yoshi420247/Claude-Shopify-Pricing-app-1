@@ -1,13 +1,25 @@
-// Core AI pricing analysis pipeline using GPT-5.2 with reasoning
+// Core AI pricing analysis pipeline using GPT-5.2 or Claude with reasoning
 // Handles: product identification → competitor search → AI pricing → deliberation
 // Enhanced with expert-level pricing strategies for optimal results
 
 import { chatCompletion, parseAIJson } from './openai';
+import { claudeChatCompletion, searchCompetitorsClaude, searchCompetitorsClaudeAmazon } from './claude';
 import { searchCompetitors, type CompetitorSearchResult } from './competitors';
 import { searchCompetitorsOpenAI, searchCompetitorsAmazon } from './openai-search';
 import { createServerClient } from './supabase';
 
 export type SearchMode = 'brave' | 'openai' | 'amazon' | 'none';
+export type Provider = 'openai' | 'claude';
+
+/** Get the appropriate chat completion function for the provider */
+function getCompletionFn(provider: Provider) {
+  return provider === 'claude' ? claudeChatCompletion : chatCompletion;
+}
+
+/** Get the default model for the provider */
+function getDefaultModel(provider: Provider): string {
+  return provider === 'claude' ? 'claude-sonnet-4-5-20250929' : 'gpt-5.2';
+}
 import {
   analyzeCompetitorIntelligence,
   calculateOptimalPrice,
@@ -25,7 +37,8 @@ import type {
 export async function identifyProduct(
   product: Product,
   variant: Variant,
-  model: string
+  model: string,
+  provider: Provider = 'openai'
 ): Promise<ProductIdentity> {
   const descText = product.description
     || (product.description_html || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -91,7 +104,8 @@ Respond in JSON:
   "notes": "relevant observations or null"
 }`;
 
-  const raw = await chatCompletion({
+  const complete = getCompletionFn(provider);
+  const raw = await complete({
     model,
     messages: [
       { role: 'system', content: systemPrompt },
@@ -114,7 +128,8 @@ export async function analyzePricing(
   competitorData: CompetitorSearchResult,
   identity: ProductIdentity,
   settings: Settings,
-  model: string
+  model: string,
+  provider: Provider = 'openai'
 ): Promise<AnalysisResult> {
   const cost = variant.cost || 0;
   const currentPrice = variant.price;
@@ -322,7 +337,8 @@ STRATEGIC QUESTIONS TO CONSIDER:
 
 Provide your expert analysis and final price recommendation.`;
 
-  const raw = await chatCompletion({
+  const complete = getCompletionFn(provider);
+  const raw = await complete({
     model,
     messages: [
       { role: 'system', content: systemPrompt },
@@ -365,7 +381,8 @@ export async function deliberatePricing(
   initialAnalysis: AnalysisResult,
   identity: ProductIdentity,
   settings: Settings,
-  model: string
+  model: string,
+  provider: Provider = 'openai'
 ): Promise<DeliberationResult> {
   const cost = variant.cost || 0;
   const currentPrice = variant.price;
@@ -497,7 +514,8 @@ Respond in JSON:
     });
   }
 
-  const raw = await chatCompletion({
+  const complete = getCompletionFn(provider);
+  const raw = await complete({
     model,
     messages: [
       {
@@ -521,7 +539,8 @@ async function reflectAndRetry(
   product: Product,
   identity: ProductIdentity,
   failedQueries: string[],
-  model: string
+  model: string,
+  provider: Provider = 'openai'
 ): Promise<string[]> {
   const descText = (product.description || '').substring(0, 300);
 
@@ -546,7 +565,8 @@ Respond in JSON:
 { "newQueries": ["q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8"] }`;
 
   try {
-    const raw = await chatCompletion({
+    const complete = getCompletionFn(provider);
+    const raw = await complete({
       model,
       messages: [
         { role: 'system', content: 'Generate effective search queries for e-commerce product pricing research.' },
@@ -572,7 +592,8 @@ export async function runFullAnalysis(
   variant: Variant,
   settings: Settings,
   onProgress?: (step: string) => void,
-  searchMode: SearchMode = 'brave'
+  searchMode: SearchMode = 'brave',
+  provider: Provider = 'openai'
 ): Promise<{
   suggestedPrice: number | null;
   confidence: string | null;
@@ -589,33 +610,46 @@ export async function runFullAnalysis(
   wasReflectionRetried: boolean;
   error: string | null;
 }> {
-  const model = settings.openai_model || 'gpt-5.2';
+  const model = provider === 'claude'
+    ? getDefaultModel('claude')
+    : (settings.openai_model || 'gpt-5.2');
 
   try {
     // Step 1: Identify product
-    onProgress?.('Identifying product...');
-    const identity = await identifyProduct(product, variant, model);
+    onProgress?.(`Identifying product (${provider})...`);
+    const identity = await identifyProduct(product, variant, model, provider);
 
     // Step 2: Search competitors
     let competitorData: CompetitorSearchResult;
     const productSearch = { title: product.title, vendor: product.vendor, productType: product.product_type };
-    if (searchMode === 'amazon') {
-      onProgress?.('Searching Amazon for competitor prices...');
-      competitorData = await searchCompetitorsAmazon(productSearch, identity);
-    } else if (searchMode === 'openai') {
-      onProgress?.('Searching competitors (OpenAI web search)...');
-      competitorData = await searchCompetitorsOpenAI(productSearch, identity);
-    } else if (searchMode === 'none') {
+    if (searchMode === 'none') {
       onProgress?.('Skipping competitor search...');
       competitorData = { competitors: [], rawResults: [], excluded: [], queries: [] };
-    } else {
+    } else if (searchMode === 'amazon') {
+      if (provider === 'claude') {
+        onProgress?.('Searching Amazon (Claude web search)...');
+        competitorData = await searchCompetitorsClaudeAmazon(productSearch, identity);
+      } else {
+        onProgress?.('Searching Amazon (OpenAI web search)...');
+        competitorData = await searchCompetitorsAmazon(productSearch, identity);
+      }
+    } else if (searchMode === 'brave') {
       onProgress?.('Searching competitors (Brave)...');
       competitorData = await searchCompetitors(productSearch, identity, 3);
+    } else {
+      // searchMode === 'openai' (default) — route to provider's web search
+      if (provider === 'claude') {
+        onProgress?.('Searching competitors (Claude web search)...');
+        competitorData = await searchCompetitorsClaude(productSearch, identity);
+      } else {
+        onProgress?.('Searching competitors (OpenAI web search)...');
+        competitorData = await searchCompetitorsOpenAI(productSearch, identity);
+      }
     }
 
     // Step 3: AI pricing analysis
-    onProgress?.('Analyzing pricing...');
-    let analysis = await analyzePricing(product, variant, competitorData, identity, settings, model);
+    onProgress?.(`Analyzing pricing (${provider})...`);
+    let analysis = await analyzePricing(product, variant, competitorData, identity, settings, model, provider);
 
     let wasDeliberated = false;
     let wasReflectionRetried = false;
@@ -626,18 +660,23 @@ export async function runFullAnalysis(
 
     if (hasInsufficientData && searchMode !== 'none' && competitorData.queries.length > 0) {
       onProgress?.('AI reflection on search strategy...');
-      const newQueries = await reflectAndRetry(product, identity, competitorData.queries, model);
+      const newQueries = await reflectAndRetry(product, identity, competitorData.queries, model, provider);
 
       if (newQueries.length > 0) {
         onProgress?.('Retrying with AI-suggested searches...');
         let retryData: CompetitorSearchResult;
+        const retryIdentity = { ...identity, searchQueries: newQueries };
         if (searchMode === 'amazon') {
-          retryData = await searchCompetitorsAmazon(productSearch, { ...identity, searchQueries: newQueries });
-        } else if (searchMode === 'openai') {
-          retryData = await searchCompetitorsOpenAI(productSearch, { ...identity, searchQueries: newQueries });
-        } else {
+          retryData = provider === 'claude'
+            ? await searchCompetitorsClaudeAmazon(productSearch, retryIdentity)
+            : await searchCompetitorsAmazon(productSearch, retryIdentity);
+        } else if (searchMode === 'brave') {
           const { searchCompetitors: sc } = await import('./competitors');
-          retryData = await sc(productSearch, { ...identity, searchQueries: newQueries }, 1);
+          retryData = await sc(productSearch, retryIdentity, 1);
+        } else {
+          retryData = provider === 'claude'
+            ? await searchCompetitorsClaude(productSearch, retryIdentity)
+            : await searchCompetitorsOpenAI(productSearch, retryIdentity);
         }
 
         // Merge new results
@@ -650,7 +689,7 @@ export async function runFullAnalysis(
 
         if (retryData.competitors.length > 0) {
           onProgress?.('Re-analyzing with new data...');
-          const reanalysis = await analyzePricing(product, variant, competitorData, identity, settings, model);
+          const reanalysis = await analyzePricing(product, variant, competitorData, identity, settings, model, provider);
           if ((reanalysis.competitorAnalysis?.retailCount || 0) > (analysis.competitorAnalysis?.retailCount || 0)) {
             analysis = reanalysis;
             wasReflectionRetried = true;
@@ -662,7 +701,7 @@ export async function runFullAnalysis(
     // Step 5: Deep deliberation if still uncertain
     if (hasInsufficientData || hasLowConfidence || !analysis.suggestedPrice) {
       onProgress?.('Deep deliberation...');
-      const deliberation = await deliberatePricing(product, variant, analysis, identity, settings, model);
+      const deliberation = await deliberatePricing(product, variant, analysis, identity, settings, model, provider);
       if (deliberation.deliberatedPrice) {
         analysis.suggestedPrice = deliberation.deliberatedPrice;
         analysis.confidence = deliberation.confidence;
