@@ -62,7 +62,7 @@ function parseArgs(): {
   const has = (flag: string): boolean => args.includes(flag);
 
   const rawSearch = get('--search-mode') || 'openai';
-  const searchMode: SearchMode = rawSearch === 'brave' ? 'brave' : rawSearch === 'none' ? 'none' : 'openai';
+  const searchMode: SearchMode = rawSearch === 'brave' ? 'brave' : rawSearch === 'amazon' ? 'amazon' : rawSearch === 'none' ? 'none' : 'openai';
 
   const rawMarkup = get('--markup');
   const markup = rawMarkup ? parseFloat(rawMarkup) : null;
@@ -362,10 +362,13 @@ async function main() {
   const requiredEnv = [
     'NEXT_PUBLIC_SUPABASE_URL',
     'SUPABASE_SERVICE_ROLE_KEY',
-    'OPENAI_API_KEY',
     'SHOPIFY_STORE_NAME',
     'SHOPIFY_ACCESS_TOKEN',
   ];
+  // Only require OPENAI_API_KEY when NOT using pure markup mode
+  if (!opts.markup) {
+    requiredEnv.push('OPENAI_API_KEY');
+  }
   // Only require BRAVE_API_KEY when using brave search mode
   if (opts.searchMode === 'brave') {
     requiredEnv.push('BRAVE_API_KEY');

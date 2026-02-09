@@ -182,6 +182,143 @@ Return at least 2-5 competitor prices if available. If no exact matches exist, i
 }
 
 /**
+ * Use OpenAI Responses API with web_search to find competitor prices on Amazon ONLY.
+ * Constrains searches to amazon.com for fast, reliable pricing data without
+ * needing to crawl dozens of niche retailers.
+ */
+export async function searchCompetitorsAmazon(
+  product: { title: string; vendor: string | null; productType: string | null },
+  identity: ProductIdentity,
+): Promise<CompetitorSearchResult> {
+  const key = getOpenAIKey();
+  const productName = identity.identifiedAs || product.title;
+  const brand = product.vendor || identity.brand || '';
+  const productType = identity.productType || product.productType || '';
+
+  const searchPrompt = `Search Amazon.com for this product and return pricing data.
+
+PRODUCT: ${product.title}
+IDENTIFIED AS: ${productName}
+BRAND/VENDOR: ${brand || 'Unknown'}
+TYPE: ${productType || 'Unknown'}
+KEY FEATURES: ${(identity.keyFeatures || []).join(', ')}
+
+INSTRUCTIONS:
+1. Search ONLY on amazon.com for this product or very similar products
+2. Use search queries like: site:amazon.com ${productName} ${brand}
+3. Find actual Amazon retail/sale prices (NOT third-party wholesale)
+4. Include the Amazon URL, listing title, and price for each result
+5. If no exact match, include similar products in the same category on Amazon
+6. Look for both the main listing price and any "Other Sellers" prices
+
+Return JSON (no markdown, just raw JSON):
+{
+  "competitors": [
+    {
+      "source": "amazon.com",
+      "url": "full Amazon URL",
+      "title": "Amazon listing title",
+      "price": 12.99,
+      "isKnownRetailer": true
+    }
+  ],
+  "searchSummary": "brief summary of what was found on Amazon"
+}
+
+Return up to 5 Amazon listings if available. Only include prices between $1 and $2000.`;
+
+  try {
+    const result = await openaiRateLimiter.execute(async () => {
+      const res = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          tools: [{ type: 'web_search' }],
+          tool_choice: 'required',
+          input: searchPrompt,
+          max_output_tokens: 4000,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
+        throw new Error(err.error?.message || `OpenAI search error: ${res.status}`);
+      }
+
+      const data = await res.json();
+
+      let textContent = '';
+      if (data.output && Array.isArray(data.output)) {
+        for (const item of data.output) {
+          if (item.type === 'message' && item.content) {
+            for (const content of item.content) {
+              if (content.type === 'output_text') {
+                textContent = content.text;
+              }
+            }
+          }
+        }
+      }
+
+      if (!textContent) {
+        throw new Error('No text response from OpenAI Amazon search');
+      }
+
+      return textContent;
+    }, 3);
+
+    let parsed: OpenAISearchPriceResult;
+    try {
+      parsed = parseAIJson<OpenAISearchPriceResult>(result);
+    } catch {
+      parsed = extractPricesFromNarrative(result, product.title);
+    }
+
+    // Filter to Amazon results only and convert to CompetitorPrice format
+    const competitors: CompetitorPrice[] = (parsed.competitors || [])
+      .filter(c => c.price >= 1 && c.price <= 2000)
+      .map(c => ({
+        source: 'amazon.com',
+        url: c.url && c.url.includes('amazon') ? c.url : `https://amazon.com/s?k=${encodeURIComponent(product.title)}`,
+        title: c.title || product.title,
+        price: c.price,
+        extractionMethod: 'openai-amazon-search',
+        isKnownRetailer: true,
+        inStock: true,
+      }));
+
+    // Deduplicate by price
+    const seenPrices = new Set<number>();
+    const dedupedCompetitors = competitors.filter(c => {
+      if (seenPrices.has(c.price)) return false;
+      seenPrices.add(c.price);
+      return true;
+    });
+
+    return {
+      competitors: dedupedCompetitors,
+      rawResults: [],
+      excluded: [],
+      queries: [`amazon-search: ${product.title}`],
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'Unknown error';
+    console.error(`OpenAI Amazon search failed for "${product.title}": ${msg}`);
+
+    return {
+      competitors: [],
+      rawResults: [],
+      excluded: [],
+      queries: [`amazon-search-failed: ${product.title}`],
+    };
+  }
+}
+
+/**
  * Fallback: extract price data from narrative/non-JSON OpenAI responses.
  * When the model returns text like "priced at $15.00" instead of JSON,
  * we regex-extract prices and build a minimal result.

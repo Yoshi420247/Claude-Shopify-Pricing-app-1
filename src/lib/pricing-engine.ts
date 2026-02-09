@@ -4,10 +4,10 @@
 
 import { chatCompletion, parseAIJson } from './openai';
 import { searchCompetitors, type CompetitorSearchResult } from './competitors';
-import { searchCompetitorsOpenAI } from './openai-search';
+import { searchCompetitorsOpenAI, searchCompetitorsAmazon } from './openai-search';
 import { createServerClient } from './supabase';
 
-export type SearchMode = 'brave' | 'openai' | 'none';
+export type SearchMode = 'brave' | 'openai' | 'amazon' | 'none';
 import {
   analyzeCompetitorIntelligence,
   calculateOptimalPrice,
@@ -598,22 +598,19 @@ export async function runFullAnalysis(
 
     // Step 2: Search competitors
     let competitorData: CompetitorSearchResult;
-    if (searchMode === 'openai') {
+    const productSearch = { title: product.title, vendor: product.vendor, productType: product.product_type };
+    if (searchMode === 'amazon') {
+      onProgress?.('Searching Amazon for competitor prices...');
+      competitorData = await searchCompetitorsAmazon(productSearch, identity);
+    } else if (searchMode === 'openai') {
       onProgress?.('Searching competitors (OpenAI web search)...');
-      competitorData = await searchCompetitorsOpenAI(
-        { title: product.title, vendor: product.vendor, productType: product.product_type },
-        identity,
-      );
+      competitorData = await searchCompetitorsOpenAI(productSearch, identity);
     } else if (searchMode === 'none') {
       onProgress?.('Skipping competitor search...');
       competitorData = { competitors: [], rawResults: [], excluded: [], queries: [] };
     } else {
       onProgress?.('Searching competitors (Brave)...');
-      competitorData = await searchCompetitors(
-        { title: product.title, vendor: product.vendor, productType: product.product_type },
-        identity,
-        3
-      );
+      competitorData = await searchCompetitors(productSearch, identity, 3);
     }
 
     // Step 3: AI pricing analysis
@@ -634,18 +631,13 @@ export async function runFullAnalysis(
       if (newQueries.length > 0) {
         onProgress?.('Retrying with AI-suggested searches...');
         let retryData: CompetitorSearchResult;
-        if (searchMode === 'openai') {
-          retryData = await searchCompetitorsOpenAI(
-            { title: product.title, vendor: product.vendor, productType: product.product_type },
-            { ...identity, searchQueries: newQueries },
-          );
+        if (searchMode === 'amazon') {
+          retryData = await searchCompetitorsAmazon(productSearch, { ...identity, searchQueries: newQueries });
+        } else if (searchMode === 'openai') {
+          retryData = await searchCompetitorsOpenAI(productSearch, { ...identity, searchQueries: newQueries });
         } else {
           const { searchCompetitors: sc } = await import('./competitors');
-          retryData = await sc(
-            { title: product.title, vendor: product.vendor, productType: product.product_type },
-            { ...identity, searchQueries: newQueries },
-            1
-          );
+          retryData = await sc(productSearch, { ...identity, searchQueries: newQueries }, 1);
         }
 
         // Merge new results
