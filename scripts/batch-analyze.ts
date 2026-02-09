@@ -49,6 +49,7 @@ function parseArgs(): {
   dryRun: boolean;
   skipApply: boolean;
   skipAnalyzed: boolean;
+  fast: boolean;
   limit: number;
   searchMode: SearchMode;
   provider: Provider;
@@ -82,6 +83,7 @@ function parseArgs(): {
     dryRun: has('--dry-run'),
     skipApply: has('--skip-apply'),
     skipAnalyzed: has('--skip-analyzed'),
+    fast: has('--fast'),
     limit: parseInt(get('--limit') || '0', 10),
     searchMode,
     provider,
@@ -140,7 +142,7 @@ async function processVariant(
   variant: Variant,
   settings: Settings,
   db: ReturnType<typeof createClient>,
-  opts: { dryRun: boolean; skipApply: boolean; searchMode: SearchMode; provider: Provider },
+  opts: { dryRun: boolean; skipApply: boolean; searchMode: SearchMode; provider: Provider; fast: boolean },
 ): Promise<{ success: boolean; applied: boolean; price: number | null; error: string | null }> {
   const label = `${product.title} / ${variant.title || 'Default'} (${variant.id})`;
 
@@ -148,7 +150,7 @@ async function processVariant(
     log(`Analyzing: ${label}`);
     const result = await runFullAnalysis(product, variant, settings, (step) => {
       log(`  ${step}`);
-    }, opts.searchMode, opts.provider);
+    }, opts.searchMode, opts.provider, opts.fast);
 
     if (result.error) {
       logError(`Analysis failed for ${label}: ${result.error}`);
@@ -357,6 +359,7 @@ async function main() {
   console.log(`  Dry run:        ${opts.dryRun}`);
   console.log(`  Skip apply:     ${opts.skipApply}`);
   console.log(`  Skip analyzed:  ${opts.skipAnalyzed}`);
+  console.log(`  Fast mode:      ${opts.fast ? 'YES (cheap models, no reflection/deliberation)' : 'no'}`);
   console.log(`  Search mode:    ${opts.searchMode}`);
   console.log(`  AI Provider:    ${opts.provider.toUpperCase()}`);
   console.log(`  Limit:          ${opts.limit || 'none'}`);
@@ -542,7 +545,7 @@ async function main() {
 
   // Log to activity_log
   await db.from('activity_log').insert({
-    message: `Batch started: ${toProcess.length} variants, ${opts.concurrency} workers, ${opts.provider.toUpperCase()}${opts.vendor ? ` (vendor: ${opts.vendor})` : ''}${opts.failedReport ? ' (retry mode)' : ''}${opts.skipAnalyzed ? ' (skip-analyzed)' : ''}${opts.markup ? ` (${opts.markup}x markup)` : ', AI unlimited'}, auto-apply${opts.dryRun ? ' (DRY RUN)' : ''}`,
+    message: `Batch started: ${toProcess.length} variants, ${opts.concurrency} workers, ${opts.provider.toUpperCase()}${opts.fast ? ' FAST' : ''}${opts.vendor ? ` (vendor: ${opts.vendor})` : ''}${opts.failedReport ? ' (retry mode)' : ''}${opts.skipAnalyzed ? ' (skip-analyzed)' : ''}${opts.markup ? ` (${opts.markup}x markup)` : ''}, auto-apply${opts.dryRun ? ' (DRY RUN)' : ''}`,
     type: 'info',
   });
 
@@ -571,6 +574,7 @@ async function main() {
           skipApply: opts.skipApply,
           searchMode: opts.searchMode,
           provider: opts.provider,
+          fast: opts.fast,
         });
     activeWorkers--;
 
