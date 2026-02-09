@@ -72,10 +72,13 @@ class ConcurrentRateLimiter {
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         const msg = lastError.message.toLowerCase();
-        if (msg.includes('429') || msg.includes('rate_limited') || msg.includes('rate limit')) {
+        const isRateLimited = msg.includes('429') || msg.includes('rate_limited') || msg.includes('rate limit')
+          || msg.includes('exceed') || msg.includes('overloaded');
+        if (isRateLimited) {
           if (attempt < maxRetries) {
-            const backoff = Math.pow(2, attempt + 1) * 1000;
-            console.log(`[${this.name}] Rate limited, retry ${attempt + 1}/${maxRetries} after ${backoff}ms`);
+            // Longer backoff for token-based limits (Claude output tokens/min)
+            const backoff = Math.pow(2, attempt + 1) * 2000;
+            console.log(`[${this.name}] Rate limited, retry ${attempt + 1}/${maxRetries} after ${backoff / 1000}s`);
             await new Promise(r => setTimeout(r, backoff));
             continue;
           }
@@ -114,8 +117,10 @@ export const braveRateLimiter = new ConcurrentRateLimiter('brave', {
   maxPerMinute: 15,
 });
 
-// Claude (Anthropic): high concurrency — similar to OpenAI paid tiers
+// Claude (Anthropic): conservative concurrency — output token limits are strict
+// Default tier: 90k output tokens/min. Each request uses 2k-16k tokens.
+// Safe to run ~10-20 concurrent, ~40 requests/min.
 export const claudeRateLimiter = new ConcurrentRateLimiter('claude', {
-  maxConcurrent: 150,
-  maxPerMinute: 500,
+  maxConcurrent: 15,
+  maxPerMinute: 40,
 });

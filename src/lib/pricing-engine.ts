@@ -20,6 +20,18 @@ function getCompletionFn(provider: Provider) {
 function getDefaultModel(provider: Provider): string {
   return provider === 'claude' ? 'claude-sonnet-4-5-20250929' : 'gpt-5.2';
 }
+
+/** Get the cheap/fast model for the provider */
+function getFastModel(provider: Provider): string {
+  return provider === 'claude' ? 'claude-haiku-4-5-20251001' : 'gpt-4o-mini';
+}
+
+// In-memory product identity cache — reuse across variants of the same product
+const identityCache = new Map<string, ProductIdentity>();
+
+export function clearIdentityCache() {
+  identityCache.clear();
+}
 import {
   analyzeCompetitorIntelligence,
   calculateOptimalPrice,
@@ -593,7 +605,8 @@ export async function runFullAnalysis(
   settings: Settings,
   onProgress?: (step: string) => void,
   searchMode: SearchMode = 'brave',
-  provider: Provider = 'openai'
+  provider: Provider = 'openai',
+  fast: boolean = false,
 ): Promise<{
   suggestedPrice: number | null;
   confidence: string | null;
@@ -610,14 +623,24 @@ export async function runFullAnalysis(
   wasReflectionRetried: boolean;
   error: string | null;
 }> {
-  const model = provider === 'claude'
-    ? getDefaultModel('claude')
-    : (settings.openai_model || 'gpt-5.2');
+  // Fast mode: use cheapest models, skip reflection + deliberation
+  const model = fast
+    ? getFastModel(provider)
+    : (provider === 'claude' ? getDefaultModel('claude') : (settings.openai_model || 'gpt-5.2'));
+  const reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'xhigh' = fast ? 'low' : 'high';
 
   try {
-    // Step 1: Identify product
-    onProgress?.(`Identifying product (${provider})...`);
-    const identity = await identifyProduct(product, variant, model, provider);
+    // Step 1: Identify product (cached per product — all variants share identity)
+    let identity: ProductIdentity;
+    const cached = identityCache.get(product.id);
+    if (cached) {
+      onProgress?.('Using cached product identity...');
+      identity = cached;
+    } else {
+      onProgress?.(`Identifying product (${fast ? 'fast' : provider})...`);
+      identity = await identifyProduct(product, variant, model, provider);
+      identityCache.set(product.id, identity);
+    }
 
     // Step 2: Search competitors
     let competitorData: CompetitorSearchResult;
@@ -648,73 +671,76 @@ export async function runFullAnalysis(
     }
 
     // Step 3: AI pricing analysis
-    onProgress?.(`Analyzing pricing (${provider})...`);
+    onProgress?.(`Analyzing pricing (${fast ? 'fast' : provider})...`);
     let analysis = await analyzePricing(product, variant, competitorData, identity, settings, model, provider);
 
     let wasDeliberated = false;
     let wasReflectionRetried = false;
 
-    // Step 4: If insufficient data, try AI reflection + retry
-    const hasInsufficientData = (analysis.competitorAnalysis?.retailCount || 0) < 2;
-    const hasLowConfidence = analysis.confidence === 'low';
+    // Steps 4-5: Reflection + Deliberation — SKIP in fast mode
+    if (!fast) {
+      // Step 4: If insufficient data, try AI reflection + retry
+      const hasInsufficientData = (analysis.competitorAnalysis?.retailCount || 0) < 2;
+      const hasLowConfidence = analysis.confidence === 'low';
 
-    if (hasInsufficientData && searchMode !== 'none' && competitorData.queries.length > 0) {
-      onProgress?.('AI reflection on search strategy...');
-      const newQueries = await reflectAndRetry(product, identity, competitorData.queries, model, provider);
+      if (hasInsufficientData && searchMode !== 'none' && competitorData.queries.length > 0) {
+        onProgress?.('AI reflection on search strategy...');
+        const newQueries = await reflectAndRetry(product, identity, competitorData.queries, model, provider);
 
-      if (newQueries.length > 0) {
-        onProgress?.('Retrying with AI-suggested searches...');
-        let retryData: CompetitorSearchResult;
-        const retryIdentity = { ...identity, searchQueries: newQueries };
-        if (searchMode === 'amazon') {
-          retryData = provider === 'claude'
-            ? await searchCompetitorsClaudeAmazon(productSearch, retryIdentity)
-            : await searchCompetitorsAmazon(productSearch, retryIdentity);
-        } else if (searchMode === 'brave') {
-          const { searchCompetitors: sc } = await import('./competitors');
-          retryData = await sc(productSearch, retryIdentity, 1);
-        } else {
-          retryData = provider === 'claude'
-            ? await searchCompetitorsClaude(productSearch, retryIdentity)
-            : await searchCompetitorsOpenAI(productSearch, retryIdentity);
-        }
-
-        // Merge new results
-        for (const comp of retryData.competitors) {
-          if (!competitorData.competitors.some(c => c.price === comp.price)) {
-            competitorData.competitors.push(comp);
+        if (newQueries.length > 0) {
+          onProgress?.('Retrying with AI-suggested searches...');
+          let retryData: CompetitorSearchResult;
+          const retryIdentity = { ...identity, searchQueries: newQueries };
+          if (searchMode === 'amazon') {
+            retryData = provider === 'claude'
+              ? await searchCompetitorsClaudeAmazon(productSearch, retryIdentity)
+              : await searchCompetitorsAmazon(productSearch, retryIdentity);
+          } else if (searchMode === 'brave') {
+            const { searchCompetitors: sc } = await import('./competitors');
+            retryData = await sc(productSearch, retryIdentity, 1);
+          } else {
+            retryData = provider === 'claude'
+              ? await searchCompetitorsClaude(productSearch, retryIdentity)
+              : await searchCompetitorsOpenAI(productSearch, retryIdentity);
           }
-        }
-        competitorData.queries.push(...newQueries);
 
-        if (retryData.competitors.length > 0) {
-          onProgress?.('Re-analyzing with new data...');
-          const reanalysis = await analyzePricing(product, variant, competitorData, identity, settings, model, provider);
-          if ((reanalysis.competitorAnalysis?.retailCount || 0) > (analysis.competitorAnalysis?.retailCount || 0)) {
-            analysis = reanalysis;
-            wasReflectionRetried = true;
+          // Merge new results
+          for (const comp of retryData.competitors) {
+            if (!competitorData.competitors.some(c => c.price === comp.price)) {
+              competitorData.competitors.push(comp);
+            }
+          }
+          competitorData.queries.push(...newQueries);
+
+          if (retryData.competitors.length > 0) {
+            onProgress?.('Re-analyzing with new data...');
+            const reanalysis = await analyzePricing(product, variant, competitorData, identity, settings, model, provider);
+            if ((reanalysis.competitorAnalysis?.retailCount || 0) > (analysis.competitorAnalysis?.retailCount || 0)) {
+              analysis = reanalysis;
+              wasReflectionRetried = true;
+            }
           }
         }
       }
-    }
 
-    // Step 5: Deep deliberation if still uncertain
-    if (hasInsufficientData || hasLowConfidence || !analysis.suggestedPrice) {
-      onProgress?.('Deep deliberation...');
-      const deliberation = await deliberatePricing(product, variant, analysis, identity, settings, model, provider);
-      if (deliberation.deliberatedPrice) {
-        analysis.suggestedPrice = deliberation.deliberatedPrice;
-        analysis.confidence = deliberation.confidence;
-        analysis.confidenceReason = deliberation.confidenceReason;
-        analysis.priceFloor = deliberation.priceFloor || analysis.priceFloor;
-        analysis.priceCeiling = deliberation.priceCeiling || analysis.priceCeiling;
-        analysis.reasoning = [
-          ...(analysis.reasoning || []),
-          `DELIBERATION: ${deliberation.reasoning?.finalDecision || 'Price set via deep analysis'}`,
-        ];
-        wasDeliberated = true;
+      // Step 5: Deep deliberation if still uncertain
+      if (hasInsufficientData || hasLowConfidence || !analysis.suggestedPrice) {
+        onProgress?.('Deep deliberation...');
+        const deliberation = await deliberatePricing(product, variant, analysis, identity, settings, model, provider);
+        if (deliberation.deliberatedPrice) {
+          analysis.suggestedPrice = deliberation.deliberatedPrice;
+          analysis.confidence = deliberation.confidence;
+          analysis.confidenceReason = deliberation.confidenceReason;
+          analysis.priceFloor = deliberation.priceFloor || analysis.priceFloor;
+          analysis.priceCeiling = deliberation.priceCeiling || analysis.priceCeiling;
+          analysis.reasoning = [
+            ...(analysis.reasoning || []),
+            `DELIBERATION: ${deliberation.reasoning?.finalDecision || 'Price set via deep analysis'}`,
+          ];
+          wasDeliberated = true;
+        }
       }
-    }
+    } // end if (!fast)
 
     return {
       suggestedPrice: analysis.suggestedPrice,

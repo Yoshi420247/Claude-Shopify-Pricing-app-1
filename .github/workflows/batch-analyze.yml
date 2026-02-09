@@ -50,6 +50,11 @@ on:
         required: true
         type: boolean
         default: false
+      fast:
+        description: 'Fast mode: uses cheap models (gpt-4o-mini/haiku), skips reflection + deliberation. ~10x cheaper.'
+        required: true
+        type: boolean
+        default: false
       dry_run:
         description: 'Dry run (analyze only, do NOT apply prices)'
         required: true
@@ -115,6 +120,10 @@ jobs:
 
           if [ "${{ inputs.skip_analyzed }}" = "true" ]; then
             ARGS="$ARGS --skip-analyzed"
+          fi
+
+          if [ "${{ inputs.fast }}" = "true" ]; then
+            ARGS="$ARGS --fast"
           fi
 
           if [ -n "${{ inputs.markup }}" ]; then
