@@ -307,81 +307,52 @@ async function fetchOilSlickProducts(): Promise<ShopifyProduct[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Matching logic — matches Shopify variants to CSV reference data
+// Matching logic — SKU-first global matching
+//
+// Product names differ between Oil Slick Pad (Shopify) and Kraft & Kitchen,
+// but SKUs are shared. Strategy:
+//   1. Build a global SKU -> CSV variant+product map
+//   2. For each Shopify variant, look up by SKU directly (ignoring product title)
+//   3. For variants without SKU matches, fall back to variant title matching
+//      within products that were already identified via SKU matches
 // ---------------------------------------------------------------------------
+
+interface SkuMapEntry {
+  refProduct: RefProduct;
+  refVariant: RefVariant;
+}
+
+function buildSkuMap(refProducts: RefProduct[]): Map<string, SkuMapEntry> {
+  const map = new Map<string, SkuMapEntry>();
+  for (const refProduct of refProducts) {
+    for (const refVariant of refProduct.variants) {
+      if (refVariant.sku) {
+        map.set(refVariant.sku.toLowerCase(), { refProduct, refVariant });
+      }
+    }
+  }
+  return map;
+}
 
 function normalizeStr(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-function findRefProduct(shopifyProduct: ShopifyProduct, refProducts: RefProduct[]): RefProduct | null {
-  const shopTitle = normalizeStr(shopifyProduct.title);
-
-  // Try exact normalized title match first
-  for (const ref of refProducts) {
-    if (normalizeStr(ref.title) === shopTitle) return ref;
-  }
-
-  // Try checking if shop title contains ALL words from ref title (including
-  // short words like "3oz", "5ml" which are critical size identifiers).
-  // This prevents "5 oz Glass Jar" from matching "3oz Glass Jar".
-  for (const ref of refProducts) {
-    const refWords = normalizeStr(ref.title).split(' ').filter(Boolean);
-    if (refWords.length > 0 && refWords.every(w => shopTitle.includes(w))) return ref;
-  }
-
-  // Score-based match: require ALL numeric/size tokens to match exactly,
-  // plus a high percentage of other words.
-  let bestMatch: RefProduct | null = null;
-  let bestScore = 0;
-
-  for (const ref of refProducts) {
-    const refWords = normalizeStr(ref.title).split(' ').filter(Boolean);
-    const shopWords = shopTitle.split(' ').filter(Boolean);
-
-    // Extract size/number tokens (e.g. "3oz", "5ml", "7ml", "116mm")
-    const refSizeTokens = refWords.filter(w => /^\d/.test(w));
-    const shopSizeTokens = shopWords.filter(w => /^\d/.test(w));
-
-    // ALL size tokens from the ref must appear in the shop title
-    const allSizesMatch = refSizeTokens.every(st => shopSizeTokens.includes(st));
-    if (!allSizesMatch) continue;
-
-    // Count how many ref words appear in shop title
-    const matched = refWords.filter(w => shopTitle.includes(w)).length;
-    const score = matched / refWords.length;
-
-    // Require at least 70% word match
-    if (score >= 0.7 && score > bestScore) {
-      bestScore = score;
-      bestMatch = ref;
-    }
-  }
-
-  return bestMatch;
-}
-
-function findRefVariant(shopifyVariant: ShopifyVariant, refProduct: RefProduct): RefVariant | null {
-  const shopSku = (shopifyVariant.sku || '').trim();
+/**
+ * For variants without a SKU match, try to find a matching CSV variant
+ * within a known ref product by variant title.
+ */
+function findRefVariantByTitle(shopifyVariant: ShopifyVariant, refProduct: RefProduct): RefVariant | null {
   const shopVTitle = normalizeStr(shopifyVariant.title);
 
-  // 1. Match by SKU (most reliable)
-  if (shopSku) {
-    for (const ref of refProduct.variants) {
-      if (ref.sku && ref.sku.toLowerCase() === shopSku.toLowerCase()) {
-        return ref;
-      }
-    }
-  }
-
-  // 2. Match by exact normalized variant title
+  // Exact normalized title match
   for (const ref of refProduct.variants) {
     if (normalizeStr(ref.title) === shopVTitle) {
       return ref;
     }
   }
 
-  // 3. Match by variant title containment
+  // Containment match
   for (const ref of refProduct.variants) {
     const refNorm = normalizeStr(ref.title);
     if (shopVTitle.includes(refNorm) || refNorm.includes(shopVTitle)) {
@@ -523,6 +494,10 @@ async function main() {
     process.exit(0);
   }
 
+  // Build global SKU map from CSV
+  const skuMap = buildSkuMap(refProducts);
+  log(`Built SKU map: ${skuMap.size} SKUs across all CSV products\n`);
+
   // Fetch Oil Slick products from Shopify
   log('Fetching Oil Slick vendor products from Shopify...');
   const shopifyProducts = await fetchOilSlickProducts();
@@ -534,37 +509,35 @@ async function main() {
     process.exit(0);
   }
 
-  // Match and build update list
+  // ---------------------------------------------------------------------------
+  // PASS 1: Match by SKU globally — this identifies which Shopify products
+  // correspond to which CSV products, regardless of product title differences.
+  // ---------------------------------------------------------------------------
   const updates: PriceUpdate[] = [];
-  const unmatched: { product: string; variant: string; sku: string | null }[] = [];
-  const unmatchedProducts: string[] = [];
+  const unmatchedVariants: { product: string; variant: string; sku: string | null }[] = [];
+
+  // Track which Shopify products mapped to which CSV products (via SKU hits)
+  const shopifyToRefProduct = new Map<string, RefProduct>();
+  // Track which CSV variant SKUs have already been matched
+  const matchedRefSkus = new Set<string>();
+
+  log('--- Pass 1: SKU matching ---\n');
 
   for (const product of shopifyProducts) {
-    const refProduct = findRefProduct(product, refProducts);
-    if (!refProduct) {
-      unmatchedProducts.push(product.title);
-      log(`WARNING: No matching CSV product for Shopify product "${product.title}"`);
-      continue;
-    }
-
-    log(`Matched: "${product.title}" -> CSV "${refProduct.title}"`);
-
     for (const variant of product.variants) {
-      const refVariant = findRefVariant(variant, refProduct);
-      if (!refVariant) {
-        unmatched.push({
-          product: product.title,
-          variant: variant.title,
-          sku: variant.sku,
-        });
-        log(`  WARNING: No matching variant for "${variant.title}" (SKU: ${variant.sku || 'none'})`);
-        continue;
+      const shopSku = (variant.sku || '').trim().toLowerCase();
+      if (!shopSku) continue;
+
+      const entry = skuMap.get(shopSku);
+      if (!entry) continue;
+
+      // Record which CSV product this Shopify product maps to
+      if (!shopifyToRefProduct.has(product.id)) {
+        shopifyToRefProduct.set(product.id, entry.refProduct);
+        log(`Linked: "${product.title}" -> CSV "${entry.refProduct.title}" (via SKU:${variant.sku})`);
       }
 
-      const matchedBy = variant.sku && refVariant.sku &&
-        variant.sku.toLowerCase() === refVariant.sku.toLowerCase()
-        ? `SKU:${refVariant.sku}`
-        : `title:"${refVariant.title}"`;
+      matchedRefSkus.add(shopSku);
 
       updates.push({
         shopifyVariantGid: variant.id,
@@ -573,12 +546,59 @@ async function main() {
         sku: variant.sku,
         currentPrice: variant.price,
         currentCompareAt: variant.compareAtPrice,
-        newPrice: refVariant.price,
-        newCompareAt: refVariant.compare_at_price,
-        matchedBy,
+        newPrice: entry.refVariant.price,
+        newCompareAt: entry.refVariant.compare_at_price,
+        matchedBy: `SKU:${variant.sku}`,
       });
     }
   }
+
+  log(`\nPass 1 result: ${updates.length} variants matched by SKU across ${shopifyToRefProduct.size} products\n`);
+
+  // ---------------------------------------------------------------------------
+  // PASS 2: For Shopify products already linked to a CSV product, try to match
+  // remaining variants (without SKU matches) by variant title.
+  // ---------------------------------------------------------------------------
+  log('--- Pass 2: Title matching for remaining variants ---\n');
+
+  const matchedVariantGids = new Set(updates.map(u => u.shopifyVariantGid));
+
+  for (const product of shopifyProducts) {
+    const refProduct = shopifyToRefProduct.get(product.id);
+    if (!refProduct) continue;
+
+    for (const variant of product.variants) {
+      if (matchedVariantGids.has(variant.id)) continue; // already matched by SKU
+
+      const refVariant = findRefVariantByTitle(variant, refProduct);
+      if (refVariant) {
+        updates.push({
+          shopifyVariantGid: variant.id,
+          productTitle: product.title,
+          variantTitle: variant.title,
+          sku: variant.sku,
+          currentPrice: variant.price,
+          currentCompareAt: variant.compareAtPrice,
+          newPrice: refVariant.price,
+          newCompareAt: refVariant.compare_at_price,
+          matchedBy: `title:"${refVariant.title}"`,
+        });
+        matchedVariantGids.add(variant.id);
+      } else {
+        unmatchedVariants.push({
+          product: product.title,
+          variant: variant.title,
+          sku: variant.sku,
+        });
+        log(`  WARNING: No variant match for "${product.title}" / "${variant.title}" (SKU: ${variant.sku || 'none'})`);
+      }
+    }
+  }
+
+  // Report Shopify products that had zero SKU matches (not in CSV at all)
+  const unmatchedProducts = shopifyProducts
+    .filter(p => !shopifyToRefProduct.has(p.id))
+    .map(p => p.title);
 
   // Summary before applying
   const needsUpdate = updates.filter(u =>
@@ -586,17 +606,25 @@ async function main() {
   );
 
   console.log('\n' + '-'.repeat(70));
-  log(`Matched: ${updates.length} variants`);
+  log(`Matched: ${updates.length} variants (${matchedRefSkus.size} by SKU, ${updates.length - matchedRefSkus.size} by title)`);
   log(`Need update: ${needsUpdate.length} variants`);
   log(`Already correct: ${updates.length - needsUpdate.length} variants`);
-  log(`Unmatched variants: ${unmatched.length}`);
-  log(`Unmatched products: ${unmatchedProducts.length}`);
+  log(`Unmatched variants: ${unmatchedVariants.length}`);
+  log(`Shopify products not in CSV: ${unmatchedProducts.length}`);
   console.log('-'.repeat(70) + '\n');
 
-  if (unmatched.length > 0) {
-    log('Unmatched variants (on Shopify but no CSV match):');
-    for (const u of unmatched) {
+  if (unmatchedVariants.length > 0) {
+    log('Unmatched variants (linked product but no variant match):');
+    for (const u of unmatchedVariants) {
       log(`  - ${u.product} / ${u.variant} (SKU: ${u.sku || 'none'})`);
+    }
+    console.log('');
+  }
+
+  if (unmatchedProducts.length > 0) {
+    log(`${unmatchedProducts.length} Shopify products have no matching CSV product (no shared SKUs):`);
+    for (const name of unmatchedProducts) {
+      log(`  - ${name}`);
     }
     console.log('');
   }
@@ -645,12 +673,12 @@ async function main() {
   console.log('\n' + '='.repeat(70));
   console.log(`  Sync ${dryRun ? 'Preview' : 'Complete'}`);
   console.log('='.repeat(70));
-  console.log(`  Total matched:      ${updates.length}`);
+  console.log(`  Total matched:      ${updates.length} (${matchedRefSkus.size} by SKU)`);
   console.log(`  Already correct:    ${skipped}`);
   console.log(`  ${dryRun ? 'Would update' : 'Updated'}:        ${success}`);
   console.log(`  Failed:             ${failed}`);
-  console.log(`  Unmatched variants: ${unmatched.length}`);
-  console.log(`  Unmatched products: ${unmatchedProducts.length}`);
+  console.log(`  Unmatched variants: ${unmatchedVariants.length}`);
+  console.log(`  Products not in CSV: ${unmatchedProducts.length}`);
   console.log('='.repeat(70) + '\n');
 
   if (dryRun && needsUpdate.length > 0) {
