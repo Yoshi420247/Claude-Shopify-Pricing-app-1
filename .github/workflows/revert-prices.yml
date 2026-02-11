@@ -1,0 +1,61 @@
+name: Revert Prices
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: 'Number of recent batch runs to revert (downloads logs from GitHub Actions)'
+        required: true
+        type: string
+        default: '3'
+      dry_run:
+        description: 'Dry run (preview what would be reverted, do NOT change prices)'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  revert:
+    name: Revert Batch Prices
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Revert prices
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SHOPIFY_STORE_NAME: ${{ secrets.SHOPIFY_STORE_NAME }}
+          SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ARGS="--runs ${{ inputs.runs }}"
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+
+          echo "Running: npx tsx --tsconfig tsconfig.scripts.json scripts/revert-prices.ts $ARGS"
+          eval npx tsx --tsconfig tsconfig.scripts.json scripts/revert-prices.ts $ARGS
+
+      - name: Upload revert report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: revert-report
+          path: reports/revert-*.json
+          if-no-files-found: ignore
+          retention-days: 30
