@@ -11,7 +11,7 @@ on:
 
 jobs:
   sync:
-    name: Sync Oil Slick prices from KK export
+    name: Sync Oil Slick prices from competitor research
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -30,12 +30,12 @@ jobs:
 
       - name: Verify CSV exists
         run: |
-          if [ ! -f "kk export.csv" ]; then
-            echo "ERROR: 'kk export.csv' not found in repo root."
-            echo "Upload the Kraft & Kitchen Shopify products export CSV to the repo first."
+          if [ ! -f "oil_slick_competitor_pricing_master.csv" ]; then
+            echo "ERROR: 'oil_slick_competitor_pricing_master.csv' not found in repo root."
+            echo "Upload the competitor pricing research CSV to the repo first."
             exit 1
           fi
-          echo "Found 'kk export.csv' — $(wc -l < 'kk export.csv') lines"
+          echo "Found competitor pricing CSV — $(wc -l < 'oil_slick_competitor_pricing_master.csv') lines"
 
       - name: Run pricing sync
         env:

@@ -1,8 +1,13 @@
 #!/usr/bin/env npx tsx --tsconfig tsconfig.scripts.json
 // =============================================================================
-// Sync Oil Slick Pricing — reads "kk export.csv" (Shopify products export from
-// kraftandkitchen.com) and updates all Oil Slick vendor products on your Shopify
-// store to match those prices exactly (price + compare_at_price).
+// Sync Oil Slick Pricing — reads competitor pricing research CSV and updates
+// all Oil Slick vendor products on your Shopify store to the recommended prices.
+//
+// The CSV ("oil_slick_competitor_pricing_master.csv") contains per-variant
+// competitor research with columns: SKU, Current Price, Recommended Shopify
+// Price, and Recommendation Action (Keep / Raise / Lower).
+//
+// Matching is done by SKU — product title differences are irrelevant.
 //
 // Usage:
 //   npx tsx --tsconfig tsconfig.scripts.json scripts/sync-oil-slick-pricing.ts --dry-run
@@ -10,8 +15,8 @@
 //
 // Options:
 //   --dry-run       Preview changes without applying
-//   --csv <path>    Path to CSV file (default: "kk export.csv" in repo root)
-//   --vendor <name> Vendor to filter in CSV (default: "Oil Slick")
+//   --csv <path>    Path to competitor pricing CSV (default: "oil_slick_competitor_pricing_master.csv")
+//   --skip-keep     Skip variants where Recommendation Action is "Keep" (only apply Raise/Lower)
 //
 // Environment variables required:
 //   SHOPIFY_STORE_NAME, SHOPIFY_ACCESS_TOKEN
@@ -79,83 +84,45 @@ function parseCSV(content: string): Record<string, string>[] {
 }
 
 // ---------------------------------------------------------------------------
-// Parse the KK export CSV into reference pricing data
+// Parse the competitor pricing CSV into a SKU -> recommended price map
 // ---------------------------------------------------------------------------
 
-interface RefVariant {
-  title: string;
-  sku: string;
-  price: string;
-  compare_at_price: string | null;
-}
-
-interface RefProduct {
+interface PricingEntry {
+  productTitle: string;
   handle: string;
-  title: string;
-  variants: RefVariant[];
+  sku: string;
+  currentPrice: string;
+  recommendedPrice: string;
+  action: string; // Keep, Raise, Lower
+  competitorName: string;
+  competitorPrice: string;
 }
 
-function loadPricingFromCSV(csvPath: string, vendorFilter: string): RefProduct[] {
+function loadCompetitorPricing(csvPath: string): Map<string, PricingEntry> {
   const content = fs.readFileSync(csvPath, 'utf8');
   const rows = parseCSV(content);
-
-  const products: RefProduct[] = [];
-  let currentProduct: RefProduct | null = null;
-  let currentHandle = '';
+  const skuMap = new Map<string, PricingEntry>();
 
   for (const row of rows) {
-    const handle = row['Handle'] || '';
-    const vendor = row['Vendor'] || '';
-    const title = row['Title'] || '';
-    const variantPrice = row['Variant Price'] || '';
-    const compareAt = row['Variant Compare At Price'] || '';
-    const sku = row['Variant SKU'] || '';
-    const opt1 = row['Option1 Value'] || '';
-    const opt2 = row['Option2 Value'] || '';
-    const opt3 = row['Option3 Value'] || '';
+    const sku = (row['SKU'] || '').trim();
+    const recommendedPrice = (row['Recommended Shopify Price'] || '').trim();
+    const action = (row['Recommendation Action'] || '').trim();
 
-    // Shopify CSV repeats the handle on every row, but vendor/title only on
-    // the first row. Detect a NEW product by handle changing (not just present).
-    const isNewProduct = handle && handle !== currentHandle;
+    if (!sku || !recommendedPrice) continue;
 
-    if (isNewProduct) {
-      // Save previous product if it was Oil Slick
-      if (currentProduct && currentProduct.variants.length > 0) {
-        products.push(currentProduct);
-      }
-      currentHandle = handle;
-
-      // Check vendor — only on the first row of each product
-      if (vendor.toLowerCase() === vendorFilter.toLowerCase()) {
-        currentProduct = { handle, title, variants: [] };
-      } else {
-        currentProduct = null;
-      }
-    }
-
-    // Skip if not an Oil Slick product
-    if (!currentProduct) continue;
-
-    // Build variant title from options
-    const optParts = [opt1, opt2, opt3].filter(Boolean);
-    const variantTitle = optParts.join(' / ') || 'Default';
-
-    if (variantPrice) {
-      currentProduct.variants.push({
-        title: variantTitle,
-        sku,
-        price: formatPrice(variantPrice),
-        compare_at_price: compareAt ? formatPrice(compareAt) : null,
-      });
-    }
+    skuMap.set(sku.toLowerCase(), {
+      productTitle: row['Product Title'] || '',
+      handle: row['Handle'] || '',
+      sku,
+      currentPrice: formatPrice(row['Current Price'] || '0'),
+      recommendedPrice: formatPrice(recommendedPrice),
+      action,
+      competitorName: row['Competitor Name'] || '',
+      competitorPrice: row['Competitor Price (for same qty)'] || '',
+    });
   }
 
-  // Don't forget the last product
-  if (currentProduct && currentProduct.variants.length > 0) {
-    products.push(currentProduct);
-  }
-
-  return products;
+  return skuMap;
 }
 
 function formatPrice(p: string): string {
@@ -306,117 +273,53 @@ async function fetchOilSlickProducts(): Promise<ShopifyProduct[]> {
   return allProducts;
 }
 
-// ---------------------------------------------------------------------------
-// Matching logic — SKU-first global matching
-//
-// Product names differ between Oil Slick Pad (Shopify) and Kraft & Kitchen,
-// but SKUs are shared. Strategy:
-//   1. Build a global SKU -> CSV variant+product map
-//   2. For each Shopify variant, look up by SKU directly (ignoring product title)
-//   3. For variants without SKU matches, fall back to variant title matching
-//      within products that were already identified via SKU matches
-// ---------------------------------------------------------------------------
-
-interface SkuMapEntry {
-  refProduct: RefProduct;
-  refVariant: RefVariant;
-}
-
-function buildSkuMap(refProducts: RefProduct[]): Map<string, SkuMapEntry> {
-  const map = new Map<string, SkuMapEntry>();
-  for (const refProduct of refProducts) {
-    for (const refVariant of refProduct.variants) {
-      if (refVariant.sku) {
-        map.set(refVariant.sku.toLowerCase(), { refProduct, refVariant });
-      }
-    }
-  }
-  return map;
-}
-
-function normalizeStr(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-/**
- * For variants without a SKU match, try to find a matching CSV variant
- * within a known ref product by variant title.
- */
-function findRefVariantByTitle(shopifyVariant: ShopifyVariant, refProduct: RefProduct): RefVariant | null {
-  const shopVTitle = normalizeStr(shopifyVariant.title);
-
-  // Exact normalized title match
-  for (const ref of refProduct.variants) {
-    if (normalizeStr(ref.title) === shopVTitle) {
-      return ref;
-    }
-  }
-
-  // Containment match
-  for (const ref of refProduct.variants) {
-    const refNorm = normalizeStr(ref.title);
-    if (shopVTitle.includes(refNorm) || refNorm.includes(shopVTitle)) {
-      return ref;
-    }
-  }
-
-  return null;
-}
+// (matching is done directly by SKU in main — no separate matching functions needed)
 
 // ---------------------------------------------------------------------------
-// Update variant price + compare_at_price on Shopify
+// Update variant price on Shopify
 // ---------------------------------------------------------------------------
 
 interface PriceUpdate {
   shopifyVariantGid: string;
   productTitle: string;
   variantTitle: string;
-  sku: string | null;
+  sku: string;
   currentPrice: string;
-  currentCompareAt: string | null;
   newPrice: string;
-  newCompareAt: string | null;
-  matchedBy: string;
+  action: string;
+  competitorName: string;
 }
 
 async function applyPriceUpdate(update: PriceUpdate, dryRun: boolean): Promise<boolean> {
   const variantId = extractId(update.shopifyVariantGid);
-  const label = `${update.productTitle} / ${update.variantTitle} (${variantId})`;
-
+  const label = `${update.productTitle} / ${update.variantTitle} [${update.sku}]`;
   const priceChanged = update.currentPrice !== update.newPrice;
-  const compareChanged = update.currentCompareAt !== update.newCompareAt;
 
-  if (!priceChanged && !compareChanged) {
-    log(`  SKIP (already matched): ${label} — $${update.currentPrice}`);
+  if (!priceChanged) {
+    log(`  SKIP (already correct): ${label} — $${update.currentPrice}`);
     return true;
   }
 
-  const changes: string[] = [];
-  if (priceChanged) changes.push(`price $${update.currentPrice} -> $${update.newPrice}`);
-  if (compareChanged) changes.push(`compare_at $${update.currentCompareAt || 'null'} -> $${update.newCompareAt || 'null'}`);
+  const change = `$${update.currentPrice} -> $${update.newPrice} (${update.action})`;
 
   if (dryRun) {
-    log(`  DRY RUN: ${label} — ${changes.join(', ')}`);
+    log(`  DRY RUN: ${label} — ${change}`);
     return true;
   }
 
   try {
-    const body: Record<string, unknown> = { id: parseInt(variantId) };
-    if (priceChanged) body.price = update.newPrice;
-    if (compareChanged) body.compare_at_price = update.newCompareAt;
-
     const response = await shopifyREST(`variants/${variantId}.json`, {
       method: 'PUT',
-      body: JSON.stringify({ variant: body }),
+      body: JSON.stringify({ variant: { id: parseInt(variantId), price: update.newPrice } }),
     });
 
     const returnedPrice = response?.variant?.price;
-    if (priceChanged && returnedPrice !== update.newPrice) {
+    if (returnedPrice !== update.newPrice) {
       logError(`Price mismatch for ${label}: sent ${update.newPrice}, got ${returnedPrice}`);
       return false;
     }
 
-    log(`  UPDATED: ${label} — ${changes.join(', ')}`);
+    log(`  UPDATED: ${label} — ${change}`);
     return true;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -455,15 +358,15 @@ function getArg(flag: string): string | null {
 
 async function main() {
   const dryRun = process.argv.includes('--dry-run');
-  const csvPath = getArg('--csv') || path.join(process.cwd(), 'kk export.csv');
-  const vendorFilter = getArg('--vendor') || 'Oil Slick';
+  const skipKeep = process.argv.includes('--skip-keep');
+  const csvPath = getArg('--csv') || path.join(process.cwd(), 'oil_slick_competitor_pricing_master.csv');
 
   console.log('\n' + '='.repeat(70));
-  console.log('  Oil Slick Pricing Sync — from Kraft & Kitchen CSV export');
+  console.log('  Oil Slick Pricing Sync — from Competitor Pricing Research');
   console.log('='.repeat(70));
-  console.log(`  Dry run:  ${dryRun}`);
-  console.log(`  CSV:      ${csvPath}`);
-  console.log(`  Vendor:   ${vendorFilter}`);
+  console.log(`  Dry run:    ${dryRun}`);
+  console.log(`  Skip Keep:  ${skipKeep}`);
+  console.log(`  CSV:        ${csvPath}`);
   console.log('='.repeat(70) + '\n');
 
   // Validate env
@@ -472,31 +375,27 @@ async function main() {
     process.exit(1);
   }
 
-  // Load CSV
+  // Load competitor pricing CSV
   if (!fs.existsSync(csvPath)) {
     console.error(`ERROR: CSV file not found: ${csvPath}`);
-    console.error('  Place the Kraft & Kitchen Shopify products export as "kk export.csv" in the repo root');
+    console.error('  Place "oil_slick_competitor_pricing_master.csv" in the repo root');
     process.exit(1);
   }
 
-  log(`Loading pricing from CSV: ${csvPath}`);
-  const refProducts = loadPricingFromCSV(csvPath, vendorFilter);
-  const totalRefVariants = refProducts.reduce((s, p) => s + p.variants.length, 0);
-  log(`Loaded ${refProducts.length} "${vendorFilter}" products, ${totalRefVariants} variants from CSV`);
+  log(`Loading competitor pricing from: ${csvPath}`);
+  const pricingMap = loadCompetitorPricing(csvPath);
+  log(`Loaded ${pricingMap.size} SKUs with recommended prices`);
 
-  for (const p of refProducts) {
-    log(`  - ${p.title} (${p.variants.length} variants)`);
+  // Summarize actions in CSV
+  const actionCounts = { Keep: 0, Raise: 0, Lower: 0, Other: 0 };
+  for (const entry of pricingMap.values()) {
+    if (entry.action === 'Keep') actionCounts.Keep++;
+    else if (entry.action === 'Raise') actionCounts.Raise++;
+    else if (entry.action === 'Lower') actionCounts.Lower++;
+    else actionCounts.Other++;
   }
+  log(`  Raise: ${actionCounts.Raise}, Lower: ${actionCounts.Lower}, Keep: ${actionCounts.Keep}`);
   console.log('');
-
-  if (refProducts.length === 0) {
-    log(`No "${vendorFilter}" products found in CSV. Check the Vendor column.`);
-    process.exit(0);
-  }
-
-  // Build global SKU map from CSV
-  const skuMap = buildSkuMap(refProducts);
-  log(`Built SKU map: ${skuMap.size} SKUs across all CSV products\n`);
 
   // Fetch Oil Slick products from Shopify
   log('Fetching Oil Slick vendor products from Shopify...');
@@ -509,121 +408,90 @@ async function main() {
     process.exit(0);
   }
 
-  // ---------------------------------------------------------------------------
-  // PASS 1: Match by SKU globally — this identifies which Shopify products
-  // correspond to which CSV products, regardless of product title differences.
-  // ---------------------------------------------------------------------------
+  // Match Shopify variants to competitor pricing by SKU
   const updates: PriceUpdate[] = [];
   const unmatchedVariants: { product: string; variant: string; sku: string | null }[] = [];
-
-  // Track which Shopify products mapped to which CSV products (via SKU hits)
-  const shopifyToRefProduct = new Map<string, RefProduct>();
-  // Track which CSV variant SKUs have already been matched
-  const matchedRefSkus = new Set<string>();
-
-  log('--- Pass 1: SKU matching ---\n');
+  const skippedKeep: string[] = [];
+  const matchedProducts = new Set<string>();
 
   for (const product of shopifyProducts) {
+    let productHasMatch = false;
+
     for (const variant of product.variants) {
       const shopSku = (variant.sku || '').trim().toLowerCase();
-      if (!shopSku) continue;
-
-      const entry = skuMap.get(shopSku);
-      if (!entry) continue;
-
-      // Record which CSV product this Shopify product maps to
-      if (!shopifyToRefProduct.has(product.id)) {
-        shopifyToRefProduct.set(product.id, entry.refProduct);
-        log(`Linked: "${product.title}" -> CSV "${entry.refProduct.title}" (via SKU:${variant.sku})`);
+      if (!shopSku) {
+        unmatchedVariants.push({ product: product.title, variant: variant.title, sku: null });
+        continue;
       }
 
-      matchedRefSkus.add(shopSku);
+      const entry = pricingMap.get(shopSku);
+      if (!entry) {
+        unmatchedVariants.push({ product: product.title, variant: variant.title, sku: variant.sku });
+        continue;
+      }
+
+      productHasMatch = true;
+
+      // Skip "Keep" actions if --skip-keep flag is set
+      if (skipKeep && entry.action === 'Keep') {
+        skippedKeep.push(`${product.title} / ${variant.title} [${variant.sku}]`);
+        continue;
+      }
 
       updates.push({
         shopifyVariantGid: variant.id,
         productTitle: product.title,
         variantTitle: variant.title,
-        sku: variant.sku,
+        sku: variant.sku || shopSku,
         currentPrice: variant.price,
-        currentCompareAt: variant.compareAtPrice,
-        newPrice: entry.refVariant.price,
-        newCompareAt: entry.refVariant.compare_at_price,
-        matchedBy: `SKU:${variant.sku}`,
+        newPrice: entry.recommendedPrice,
+        action: entry.action,
+        competitorName: entry.competitorName,
       });
     }
-  }
 
-  log(`\nPass 1 result: ${updates.length} variants matched by SKU across ${shopifyToRefProduct.size} products\n`);
-
-  // ---------------------------------------------------------------------------
-  // PASS 2: For Shopify products already linked to a CSV product, try to match
-  // remaining variants (without SKU matches) by variant title.
-  // ---------------------------------------------------------------------------
-  log('--- Pass 2: Title matching for remaining variants ---\n');
-
-  const matchedVariantGids = new Set(updates.map(u => u.shopifyVariantGid));
-
-  for (const product of shopifyProducts) {
-    const refProduct = shopifyToRefProduct.get(product.id);
-    if (!refProduct) continue;
-
-    for (const variant of product.variants) {
-      if (matchedVariantGids.has(variant.id)) continue; // already matched by SKU
-
-      const refVariant = findRefVariantByTitle(variant, refProduct);
-      if (refVariant) {
-        updates.push({
-          shopifyVariantGid: variant.id,
-          productTitle: product.title,
-          variantTitle: variant.title,
-          sku: variant.sku,
-          currentPrice: variant.price,
-          currentCompareAt: variant.compareAtPrice,
-          newPrice: refVariant.price,
-          newCompareAt: refVariant.compare_at_price,
-          matchedBy: `title:"${refVariant.title}"`,
-        });
-        matchedVariantGids.add(variant.id);
-      } else {
-        unmatchedVariants.push({
-          product: product.title,
-          variant: variant.title,
-          sku: variant.sku,
-        });
-        log(`  WARNING: No variant match for "${product.title}" / "${variant.title}" (SKU: ${variant.sku || 'none'})`);
-      }
+    if (productHasMatch) {
+      matchedProducts.add(product.title);
     }
   }
 
-  // Report Shopify products that had zero SKU matches (not in CSV at all)
-  const unmatchedProducts = shopifyProducts
-    .filter(p => !shopifyToRefProduct.has(p.id))
+  const unmatchedProductsList = shopifyProducts
+    .filter(p => !matchedProducts.has(p.title))
     .map(p => p.title);
 
-  // Summary before applying
-  const needsUpdate = updates.filter(u =>
-    u.currentPrice !== u.newPrice || u.currentCompareAt !== u.newCompareAt
-  );
+  // Summary
+  const needsUpdate = updates.filter(u => u.currentPrice !== u.newPrice);
+  const alreadyCorrect = updates.filter(u => u.currentPrice === u.newPrice);
 
   console.log('\n' + '-'.repeat(70));
-  log(`Matched: ${updates.length} variants (${matchedRefSkus.size} by SKU, ${updates.length - matchedRefSkus.size} by title)`);
+  log(`Matched: ${updates.length} variants across ${matchedProducts.size} products`);
   log(`Need update: ${needsUpdate.length} variants`);
-  log(`Already correct: ${updates.length - needsUpdate.length} variants`);
-  log(`Unmatched variants: ${unmatchedVariants.length}`);
-  log(`Shopify products not in CSV: ${unmatchedProducts.length}`);
+  log(`Already correct: ${alreadyCorrect.length} variants`);
+  if (skippedKeep.length > 0) log(`Skipped (Keep): ${skippedKeep.length} variants`);
+  log(`Unmatched variants (no SKU in CSV): ${unmatchedVariants.length}`);
+  log(`Shopify products not in CSV: ${unmatchedProductsList.length}`);
   console.log('-'.repeat(70) + '\n');
 
+  // Show breakdown by action
+  if (needsUpdate.length > 0) {
+    const raises = needsUpdate.filter(u => u.action === 'Raise');
+    const lowers = needsUpdate.filter(u => u.action === 'Lower');
+    const keeps = needsUpdate.filter(u => u.action === 'Keep');
+    log(`  Price changes: ${raises.length} raises, ${lowers.length} lowers, ${keeps.length} keeps`);
+    console.log('');
+  }
+
   if (unmatchedVariants.length > 0) {
-    log('Unmatched variants (linked product but no variant match):');
+    log('Unmatched variants (no matching SKU in competitor CSV):');
     for (const u of unmatchedVariants) {
       log(`  - ${u.product} / ${u.variant} (SKU: ${u.sku || 'none'})`);
     }
     console.log('');
   }
 
-  if (unmatchedProducts.length > 0) {
-    log(`${unmatchedProducts.length} Shopify products have no matching CSV product (no shared SKUs):`);
-    for (const name of unmatchedProducts) {
+  if (unmatchedProductsList.length > 0) {
+    log(`${unmatchedProductsList.length} Shopify products have no matching SKUs in CSV:`);
+    for (const name of unmatchedProductsList) {
       log(`  - ${name}`);
     }
     console.log('');
@@ -648,10 +516,8 @@ async function main() {
 
   for (let i = 0; i < updates.length; i++) {
     const update = updates[i];
-    const priceChanged = update.currentPrice !== update.newPrice;
-    const compareChanged = update.currentCompareAt !== update.newCompareAt;
 
-    if (!priceChanged && !compareChanged) {
+    if (update.currentPrice === update.newPrice) {
       skipped++;
       continue;
     }
@@ -673,12 +539,12 @@ async function main() {
   console.log('\n' + '='.repeat(70));
   console.log(`  Sync ${dryRun ? 'Preview' : 'Complete'}`);
   console.log('='.repeat(70));
-  console.log(`  Total matched:      ${updates.length} (${matchedRefSkus.size} by SKU)`);
+  console.log(`  Total matched:      ${updates.length}`);
   console.log(`  Already correct:    ${skipped}`);
   console.log(`  ${dryRun ? 'Would update' : 'Updated'}:        ${success}`);
   console.log(`  Failed:             ${failed}`);
   console.log(`  Unmatched variants: ${unmatchedVariants.length}`);
-  console.log(`  Products not in CSV: ${unmatchedProducts.length}`);
+  console.log(`  Products not in CSV: ${unmatchedProductsList.length}`);
   console.log('='.repeat(70) + '\n');
 
   if (dryRun && needsUpdate.length > 0) {
