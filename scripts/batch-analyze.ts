@@ -171,10 +171,10 @@ async function processVariant(
         await db.from('variants').update({ price }).eq('id', variant.id);
         await db
           .from('analyses')
-          .update({ applied: true, applied_at: new Date().toISOString() })
+          .update({ applied: true, applied_at: new Date().toISOString(), previous_price: variant.price })
           .match({ product_id: product.id, variant_id: variant.id });
 
-        log(`  APPLIED: $${variant.price.toFixed(2)} -> $${price.toFixed(2)}`);
+        log(`  APPLIED (${variant.id}): $${variant.price.toFixed(2)} -> $${price.toFixed(2)}`);
         return { success: true, applied: true, price, error: null };
       } catch (applyErr) {
         const msg = applyErr instanceof Error ? applyErr.message : 'Apply failed';
@@ -249,10 +249,10 @@ async function processVariantMarkup(
       await db.from('variants').update({ price }).eq('id', variant.id);
       await db
         .from('analyses')
-        .update({ applied: true, applied_at: new Date().toISOString() })
+        .update({ applied: true, applied_at: new Date().toISOString(), previous_price: variant.price })
         .match({ product_id: product.id, variant_id: variant.id });
 
-      log(`  APPLIED: $${variant.price.toFixed(2)} -> $${price.toFixed(2)}`);
+      log(`  APPLIED (${variant.id}): $${variant.price.toFixed(2)} -> $${price.toFixed(2)}`);
       return { success: true, applied: true, price, error: null };
     } catch (applyErr) {
       const msg = applyErr instanceof Error ? applyErr.message : 'Apply failed';

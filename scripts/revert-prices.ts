@@ -2,25 +2,21 @@
 // =============================================================================
 // Revert Prices — restore prices from before batch runs
 //
-// Parses GitHub Actions logs (or local log files) to find "APPLIED" lines,
-// extracts the old prices, and sets them back on Shopify + Supabase.
+// TWO MODES:
 //
-// Usage (with GitHub token — downloads logs automatically):
-//   GITHUB_TOKEN=ghp_xxx npx tsx --tsconfig tsconfig.scripts.json scripts/revert-prices.ts \
-//     --runs 3
-//
-// Usage (with local log files):
+// 1. DATABASE MODE (recommended) — uses previous_price stored in analyses table:
 //   npx tsx --tsconfig tsconfig.scripts.json scripts/revert-prices.ts \
-//     --log-file logs/run1.txt --log-file logs/run2.txt
+//     --since "2026-02-10" --dry-run
 //
-// Dry run (show what would be reverted without changing anything):
+// 2. LOG FILE MODE — parses local log files with APPLIED lines:
 //   npx tsx --tsconfig tsconfig.scripts.json scripts/revert-prices.ts \
-//     --runs 3 --dry-run
+//     --log-file logs/run1.txt --dry-run
+//
+// Always start with --dry-run to preview what will be reverted!
 //
 // Environment variables required:
 //   SHOPIFY_STORE_NAME, SHOPIFY_ACCESS_TOKEN,
 //   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
-//   GITHUB_TOKEN (only when using --runs to download logs)
 // =============================================================================
 
 import { createClient } from '@supabase/supabase-js';
@@ -36,18 +32,17 @@ interface PriceRevert {
   productTitle: string;
   variantTitle: string;
   oldPrice: number;
-  newPrice: number;
-  runId?: string;
+  currentPrice: number;
+  source: string;
 }
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
 // ---------------------------------------------------------------------------
 function parseArgs(): {
-  runs: number;
+  since: string | null;
   logFiles: string[];
   dryRun: boolean;
-  repo: string;
 } {
   const args = process.argv.slice(2);
   const get = (flag: string): string | null => {
@@ -66,10 +61,9 @@ function parseArgs(): {
   };
 
   return {
-    runs: parseInt(get('--runs') || '0', 10),
+    since: get('--since'),
     logFiles: getAll('--log-file'),
     dryRun: has('--dry-run'),
-    repo: get('--repo') || 'Yoshi420247/Claude-Shopify-Pricing-app-1',
   };
 }
 
@@ -87,99 +81,70 @@ function logError(msg: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Download logs from GitHub Actions
+// DATABASE MODE — query analyses with previous_price
 // ---------------------------------------------------------------------------
-async function downloadRunLogs(repo: string, runId: string, token: string): Promise<string> {
-  const url = `https://api.github.com/repos/${repo}/actions/runs/${runId}/logs`;
-  log(`Downloading logs for run ${runId}...`);
+async function getRevertFromDatabase(
+  db: ReturnType<typeof createClient>,
+  since: string,
+): Promise<PriceRevert[]> {
+  log(`Querying analyses applied since ${since} with stored previous_price...`);
 
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-    },
-  });
+  const { data: analyses, error } = await db
+    .from('analyses')
+    .select('variant_id, previous_price, suggested_price, applied_at, product_id')
+    .eq('applied', true)
+    .not('previous_price', 'is', null)
+    .gte('applied_at', since);
 
-  if (!response.ok) {
-    throw new Error(`Failed to download logs for run ${runId}: ${response.status} ${response.statusText}`);
+  if (error) {
+    throw new Error(`Database query failed: ${error.message}`);
   }
 
-  // GitHub returns a zip file — we need to extract it
-  const arrayBuffer = await response.arrayBuffer();
-  const zipPath = `/tmp/gh-run-${runId}.zip`;
-  const extractDir = `/tmp/gh-run-${runId}`;
-
-  fs.writeFileSync(zipPath, Buffer.from(arrayBuffer));
-
-  // Extract zip using unzip command
-  const { execSync } = await import('child_process');
-  try {
-    execSync(`rm -rf ${extractDir} && mkdir -p ${extractDir} && unzip -o ${zipPath} -d ${extractDir}`, {
-      stdio: 'pipe',
-    });
-  } catch {
-    throw new Error(`Failed to extract logs zip for run ${runId}`);
+  if (!analyses || analyses.length === 0) {
+    log('No analyses found with stored previous_price since that date.');
+    return [];
   }
 
-  // Concatenate all log files
-  const logFiles = fs.readdirSync(extractDir).filter(f => f.endsWith('.txt'));
-  let allLogs = '';
-  for (const file of logFiles) {
-    allLogs += fs.readFileSync(path.join(extractDir, file), 'utf8') + '\n';
-  }
+  log(`Found ${analyses.length} analyses with previous_price in database.`);
 
-  // Cleanup
-  try {
-    fs.unlinkSync(zipPath);
-    fs.rmSync(extractDir, { recursive: true });
-  } catch { /* ignore cleanup errors */ }
+  // Load product and variant info for display
+  const variantIds = analyses.map(a => a.variant_id);
+  const productIds = [...new Set(analyses.map(a => a.product_id))];
 
-  return allLogs;
-}
+  const [{ data: variants }, { data: products }] = await Promise.all([
+    db.from('variants').select('id, title, price').in('id', variantIds),
+    db.from('products').select('id, title').in('id', productIds),
+  ]);
 
-async function getRecentRunIds(repo: string, count: number, token: string): Promise<string[]> {
-  const url = `https://api.github.com/repos/${repo}/actions/workflows/batch-analyze.yml/runs?per_page=${count}&status=completed`;
-  log(`Fetching last ${count} completed batch-analyze runs...`);
+  const variantMap = new Map((variants || []).map(v => [v.id, v]));
+  const productMap = new Map((products || []).map(p => [p.id, p]));
 
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch workflow runs: ${response.status} ${response.statusText}`);
-  }
-
-  const data = await response.json();
-  const runs = data.workflow_runs || [];
-  const ids = runs.map((r: { id: number; created_at: string; conclusion: string }) => {
-    log(`  Run #${r.id} — ${r.created_at} (${r.conclusion})`);
-    return String(r.id);
-  });
-
-  return ids;
+  return analyses.map(a => ({
+    variantId: a.variant_id,
+    productTitle: productMap.get(a.product_id)?.title || 'Unknown',
+    variantTitle: variantMap.get(a.variant_id)?.title || 'Default',
+    oldPrice: a.previous_price,
+    currentPrice: variantMap.get(a.variant_id)?.price || a.suggested_price,
+    source: `db (applied_at: ${a.applied_at})`,
+  }));
 }
 
 // ---------------------------------------------------------------------------
-// Parse log content to extract price reverts
+// LOG FILE MODE — parse local log files
+// New format: APPLIED (variant_id): $old -> $new
+// Old format: APPLIED: $old -> $new (needs context from Analyzing: line)
 // ---------------------------------------------------------------------------
-function parseLogContent(logContent: string, runId?: string): PriceRevert[] {
+function parseLogContent(logContent: string, source: string): PriceRevert[] {
   const reverts: PriceRevert[] = [];
   const lines = logContent.split('\n');
 
-  // Track the current variant context from "Analyzing:" lines
+  // Track context from "Analyzing:" lines for old format
   let currentVariantId: string | null = null;
   let currentProductTitle: string | null = null;
   let currentVariantTitle: string | null = null;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
+  for (const line of lines) {
     // Match "Analyzing: Product Title / Variant Title (variant-id)"
-    // Log format: [timestamp] Analyzing: Product / Variant (id)
-    // GitHub Actions may prepend timestamps like "2026-02-11T14:33:00.1234567Z"
     const analyzeMatch = line.match(/Analyzing:\s+(.+?)\s+\/\s+(.*?)\s+\((\d+)\)/);
     if (analyzeMatch) {
       currentProductTitle = analyzeMatch[1].trim();
@@ -188,31 +153,7 @@ function parseLogContent(logContent: string, runId?: string): PriceRevert[] {
       continue;
     }
 
-    // Match "APPLIED: $42.50 -> $49.99"
-    const appliedMatch = line.match(/APPLIED:\s+\$(\d+\.?\d*)\s*->\s*\$(\d+\.?\d*)/);
-    if (appliedMatch && currentVariantId) {
-      const oldPrice = parseFloat(appliedMatch[1]);
-      const newPrice = parseFloat(appliedMatch[2]);
-
-      // Only add if prices are different (sanity check)
-      if (oldPrice !== newPrice) {
-        reverts.push({
-          variantId: currentVariantId,
-          productTitle: currentProductTitle || 'Unknown',
-          variantTitle: currentVariantTitle || 'Default',
-          oldPrice,
-          newPrice,
-          runId,
-        });
-      }
-
-      // Reset context
-      currentVariantId = null;
-      currentProductTitle = null;
-      currentVariantTitle = null;
-    }
-
-    // Also match "Markup: Product / Variant (id)" lines for markup mode
+    // Match "Markup: Product / Variant (id)" lines
     const markupMatch = line.match(/Markup:\s+(.+?)\s+\/\s+(.*?)\s+\((\d+)\)/);
     if (markupMatch) {
       currentProductTitle = markupMatch[1].trim();
@@ -220,26 +161,53 @@ function parseLogContent(logContent: string, runId?: string): PriceRevert[] {
       currentVariantId = markupMatch[3];
       continue;
     }
+
+    // NEW FORMAT: "APPLIED (variant_id): $old -> $new"
+    const newFormatMatch = line.match(/APPLIED\s+\((\d+)\):\s+\$(\d+\.?\d*)\s*->\s*\$(\d+\.?\d*)/);
+    if (newFormatMatch) {
+      reverts.push({
+        variantId: newFormatMatch[1],
+        productTitle: currentProductTitle || 'Unknown',
+        variantTitle: currentVariantTitle || 'Default',
+        oldPrice: parseFloat(newFormatMatch[2]),
+        currentPrice: parseFloat(newFormatMatch[3]),
+        source,
+      });
+      currentVariantId = null;
+      currentProductTitle = null;
+      currentVariantTitle = null;
+      continue;
+    }
+
+    // OLD FORMAT: "APPLIED: $old -> $new" (relies on preceding Analyzing: line)
+    const oldFormatMatch = line.match(/APPLIED:\s+\$(\d+\.?\d*)\s*->\s*\$(\d+\.?\d*)/);
+    if (oldFormatMatch && currentVariantId) {
+      reverts.push({
+        variantId: currentVariantId,
+        productTitle: currentProductTitle || 'Unknown',
+        variantTitle: currentVariantTitle || 'Default',
+        oldPrice: parseFloat(oldFormatMatch[1]),
+        currentPrice: parseFloat(oldFormatMatch[2]),
+        source,
+      });
+      currentVariantId = null;
+      currentProductTitle = null;
+      currentVariantTitle = null;
+    }
   }
 
   return reverts;
 }
 
 // ---------------------------------------------------------------------------
-// Deduplicate reverts — if a variant was changed in multiple runs,
-// we want the OLDEST old price (the original before any batch runs)
+// Deduplicate — if a variant appears multiple times, keep the earliest old price
 // ---------------------------------------------------------------------------
 function deduplicateReverts(reverts: PriceRevert[]): PriceRevert[] {
-  // Group by variantId — keep the entry from the EARLIEST run
-  // Since runs are in reverse chronological order (most recent first),
-  // later entries in the array are from earlier runs and have the "more original" old price
   const variantMap = new Map<string, PriceRevert>();
-
   for (const revert of reverts) {
-    // Always overwrite — later entries are from earlier runs = more original prices
+    // Later entries overwrite — they're from earlier runs with more original prices
     variantMap.set(revert.variantId, revert);
   }
-
   return Array.from(variantMap.values());
 }
 
@@ -259,8 +227,14 @@ async function applyReverts(
     const label = `${r.productTitle} / ${r.variantTitle} (${r.variantId})`;
     const progress = `[${i + 1}/${reverts.length}]`;
 
+    if (r.oldPrice === r.currentPrice) {
+      log(`${progress} SKIP (already at old price): ${label} — $${r.oldPrice.toFixed(2)}`);
+      success++;
+      continue;
+    }
+
     if (dryRun) {
-      log(`${progress} DRY RUN: ${label} — would revert $${r.newPrice.toFixed(2)} -> $${r.oldPrice.toFixed(2)}`);
+      log(`${progress} DRY RUN: ${label} — $${r.currentPrice.toFixed(2)} -> $${r.oldPrice.toFixed(2)}`);
       success++;
       continue;
     }
@@ -275,10 +249,10 @@ async function applyReverts(
       // Mark analysis as unapplied so it can be re-done
       await db
         .from('analyses')
-        .update({ applied: false, applied_at: null })
+        .update({ applied: false, applied_at: null, previous_price: null })
         .eq('variant_id', r.variantId);
 
-      log(`${progress} REVERTED: ${label} — $${r.newPrice.toFixed(2)} -> $${r.oldPrice.toFixed(2)}`);
+      log(`${progress} REVERTED: ${label} — $${r.currentPrice.toFixed(2)} -> $${r.oldPrice.toFixed(2)}`);
       success++;
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unknown error';
@@ -316,9 +290,9 @@ function saveRevertReport(reverts: PriceRevert[], result: { success: number; fai
       variantId: r.variantId,
       productTitle: r.productTitle,
       variantTitle: r.variantTitle,
-      revertedFrom: r.newPrice,
+      revertedFrom: r.currentPrice,
       revertedTo: r.oldPrice,
-      runId: r.runId,
+      source: r.source,
     })),
   };
 
@@ -336,15 +310,20 @@ async function main() {
   console.log('\n' + '='.repeat(70));
   console.log('  Oil Slick Pad — Price Revert Tool');
   console.log('='.repeat(70));
-  console.log(`  Mode:       ${opts.runs > 0 ? `Download last ${opts.runs} runs from GitHub` : 'Local log files'}`);
+  console.log(`  Mode:       ${opts.since ? `Database (since ${opts.since})` : 'Log files'}`);
   console.log(`  Log files:  ${opts.logFiles.length > 0 ? opts.logFiles.join(', ') : 'none'}`);
   console.log(`  Dry run:    ${opts.dryRun}`);
-  console.log(`  Repo:       ${opts.repo}`);
   console.log('='.repeat(70) + '\n');
 
-  if (opts.runs === 0 && opts.logFiles.length === 0) {
-    console.error('ERROR: Specify either --runs N (to download GitHub logs) or --log-file path (for local files)');
-    console.error('  Example: npx tsx --tsconfig tsconfig.scripts.json scripts/revert-prices.ts --runs 3 --dry-run');
+  if (!opts.since && opts.logFiles.length === 0) {
+    console.error('ERROR: Specify either --since DATE (to revert from database) or --log-file path (for local log files)');
+    console.error('');
+    console.error('Examples:');
+    console.error('  # Revert all prices applied since Feb 10 (uses previous_price stored in DB):');
+    console.error('  npx tsx --tsconfig tsconfig.scripts.json scripts/revert-prices.ts --since "2026-02-10" --dry-run');
+    console.error('');
+    console.error('  # Revert using downloaded log files:');
+    console.error('  npx tsx --tsconfig tsconfig.scripts.json scripts/revert-prices.ts --log-file run-log.txt --dry-run');
     process.exit(1);
   }
 
@@ -368,39 +347,15 @@ async function main() {
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
   );
 
-  // Collect all reverts from all log sources
   let allReverts: PriceRevert[] = [];
 
-  // Download from GitHub Actions
-  if (opts.runs > 0) {
-    const token = process.env.GITHUB_TOKEN;
-    if (!token) {
-      console.error('ERROR: GITHUB_TOKEN env var required when using --runs');
-      console.error('  Create a token at https://github.com/settings/tokens with "actions:read" scope');
-      process.exit(1);
-    }
-
-    const runIds = await getRecentRunIds(opts.repo, opts.runs, token);
-    if (runIds.length === 0) {
-      console.error('ERROR: No completed batch-analyze runs found');
-      process.exit(1);
-    }
-
-    // Download logs from most recent first
-    for (const runId of runIds) {
-      try {
-        const logContent = await downloadRunLogs(opts.repo, runId, token);
-        const reverts = parseLogContent(logContent, runId);
-        log(`  Found ${reverts.length} applied price changes in run ${runId}`);
-        allReverts.push(...reverts);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : 'Unknown error';
-        logError(`Failed to process run ${runId}: ${msg}`);
-      }
-    }
+  // DATABASE MODE
+  if (opts.since) {
+    const dbReverts = await getRevertFromDatabase(db, opts.since);
+    allReverts.push(...dbReverts);
   }
 
-  // Parse local log files
+  // LOG FILE MODE
   for (const logFile of opts.logFiles) {
     if (!fs.existsSync(logFile)) {
       logError(`Log file not found: ${logFile}`);
@@ -413,25 +368,28 @@ async function main() {
   }
 
   if (allReverts.length === 0) {
-    log('No price changes found in any logs. Nothing to revert.');
+    log('No price changes found. Nothing to revert.');
+    if (opts.since) {
+      log('Note: --since mode requires that previous_price was stored when prices were applied.');
+      log('If the batch run predates this feature, use --log-file mode with downloaded GitHub Actions logs instead.');
+    }
     return;
   }
 
-  log(`\nTotal price changes found across all sources: ${allReverts.length}`);
+  log(`\nTotal price changes found: ${allReverts.length}`);
 
-  // Deduplicate — use the oldest old price per variant
+  // Deduplicate
   const deduplicated = deduplicateReverts(allReverts);
   log(`Unique variants to revert: ${deduplicated.length}`);
 
   if (deduplicated.length !== allReverts.length) {
-    log(`  (${allReverts.length - deduplicated.length} duplicates removed — using earliest old price per variant)`);
+    log(`  (${allReverts.length - deduplicated.length} duplicates removed)`);
   }
 
   console.log('\n' + '-'.repeat(70));
   log(opts.dryRun ? 'DRY RUN — showing what would be reverted:' : 'Applying price reverts...');
   console.log('-'.repeat(70) + '\n');
 
-  // Apply reverts
   const result = await applyReverts(deduplicated, db, opts.dryRun);
 
   // Summary

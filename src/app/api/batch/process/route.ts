@@ -82,11 +82,12 @@ async function processOneVariant(
     // Auto-apply if enabled and we have a suggested price
     if (autoApply && analysisResult.suggestedPrice && analysisResult.suggestedPrice > 0) {
       try {
+        const previousPrice = variant.price;
         await updateVariantPrice(variant.id, analysisResult.suggestedPrice);
         await db.from('variants').update({ price: analysisResult.suggestedPrice }).eq('id', variant.id);
         await db
           .from('analyses')
-          .update({ applied: true, applied_at: new Date().toISOString() })
+          .update({ applied: true, applied_at: new Date().toISOString(), previous_price: previousPrice })
           .match({ product_id: product.id, variant_id: variant.id });
 
         return {

@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
     // Find all unapplied analyses for these variants
     const { data: analyses } = await db
       .from('analyses')
-      .select('id, variant_id, product_id, suggested_price')
+      .select('id, variant_id, product_id, suggested_price, previous_price')
       .in('variant_id', variantIds)
       .eq('applied', false)
       .not('suggested_price', 'is', null)
@@ -55,6 +55,13 @@ export async function POST(req: NextRequest) {
 
     for (const analysis of analyses) {
       try {
+        // Load current variant price before updating (for revert support)
+        const { data: variant } = await db
+          .from('variants')
+          .select('price')
+          .eq('id', analysis.variant_id)
+          .single();
+
         // Update price on Shopify
         await updateVariantPrice(analysis.variant_id, analysis.suggested_price);
 
@@ -63,9 +70,9 @@ export async function POST(req: NextRequest) {
           .update({ price: analysis.suggested_price })
           .eq('id', analysis.variant_id);
 
-        // Mark analysis as applied
+        // Mark analysis as applied (save old price for revert support)
         await db.from('analyses')
-          .update({ applied: true, applied_at: new Date().toISOString() })
+          .update({ applied: true, applied_at: new Date().toISOString(), previous_price: variant?.price ?? null })
           .eq('id', analysis.id);
 
         applied++;

@@ -76,6 +76,7 @@ export interface Analysis {
   was_reflection_retried: boolean;
   applied: boolean;
   applied_at: string | null;
+  previous_price: number | null;
   error: string | null;
   analyzed_at: string;
   created_at: string;
