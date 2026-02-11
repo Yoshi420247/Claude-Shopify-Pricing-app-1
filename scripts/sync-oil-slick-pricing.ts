@@ -114,8 +114,11 @@ function loadPricingFromCSV(csvPath: string, vendorFilter: string): RefProduct[]
     const opt2 = row['Option2 Value'] || '';
     const opt3 = row['Option3 Value'] || '';
 
-    // New product (handle present)
-    if (handle) {
+    // Shopify CSV repeats the handle on every row, but vendor/title only on
+    // the first row. Detect a NEW product by handle changing (not just present).
+    const isNewProduct = handle && handle !== currentHandle;
+
+    if (isNewProduct) {
       // Save previous product if it was Oil Slick
       if (currentProduct && currentProduct.variants.length > 0) {
         products.push(currentProduct);
@@ -314,25 +317,48 @@ function normalizeStr(s: string): string {
 function findRefProduct(shopifyProduct: ShopifyProduct, refProducts: RefProduct[]): RefProduct | null {
   const shopTitle = normalizeStr(shopifyProduct.title);
 
-  // Try exact normalized title match
+  // Try exact normalized title match first
   for (const ref of refProducts) {
     if (normalizeStr(ref.title) === shopTitle) return ref;
   }
 
-  // Try checking if shop title contains all significant words from ref title
+  // Try checking if shop title contains ALL words from ref title (including
+  // short words like "3oz", "5ml" which are critical size identifiers).
+  // This prevents "5 oz Glass Jar" from matching "3oz Glass Jar".
   for (const ref of refProducts) {
-    const refWords = normalizeStr(ref.title).split(' ').filter(w => w.length > 2);
+    const refWords = normalizeStr(ref.title).split(' ').filter(Boolean);
     if (refWords.length > 0 && refWords.every(w => shopTitle.includes(w))) return ref;
   }
 
-  // Try checking if ref title contains all significant words from shop title
+  // Score-based match: require ALL numeric/size tokens to match exactly,
+  // plus a high percentage of other words.
+  let bestMatch: RefProduct | null = null;
+  let bestScore = 0;
+
   for (const ref of refProducts) {
-    const shopWords = shopTitle.split(' ').filter(w => w.length > 2);
-    const refNorm = normalizeStr(ref.title);
-    if (shopWords.length > 0 && shopWords.every(w => refNorm.includes(w))) return ref;
+    const refWords = normalizeStr(ref.title).split(' ').filter(Boolean);
+    const shopWords = shopTitle.split(' ').filter(Boolean);
+
+    // Extract size/number tokens (e.g. "3oz", "5ml", "7ml", "116mm")
+    const refSizeTokens = refWords.filter(w => /^\d/.test(w));
+    const shopSizeTokens = shopWords.filter(w => /^\d/.test(w));
+
+    // ALL size tokens from the ref must appear in the shop title
+    const allSizesMatch = refSizeTokens.every(st => shopSizeTokens.includes(st));
+    if (!allSizesMatch) continue;
+
+    // Count how many ref words appear in shop title
+    const matched = refWords.filter(w => shopTitle.includes(w)).length;
+    const score = matched / refWords.length;
+
+    // Require at least 70% word match
+    if (score >= 0.7 && score > bestScore) {
+      bestScore = score;
+      bestMatch = ref;
+    }
   }
 
-  return null;
+  return bestMatch;
 }
 
 function findRefVariant(shopifyVariant: ShopifyVariant, refProduct: RefProduct): RefVariant | null {
