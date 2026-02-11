@@ -1,18 +1,85 @@
 #!/usr/bin/env npx tsx --tsconfig tsconfig.scripts.json
 // =============================================================================
-// Sync Oil Slick Pricing — match all Oil Slick vendor products to
-// kraftandkitchen.com pricing (price + compare_at_price)
+// Sync Oil Slick Pricing — reads "kk export.csv" (Shopify products export from
+// kraftandkitchen.com) and updates all Oil Slick vendor products on your Shopify
+// store to match those prices exactly (price + compare_at_price).
 //
 // Usage:
 //   npx tsx --tsconfig tsconfig.scripts.json scripts/sync-oil-slick-pricing.ts --dry-run
 //   npx tsx --tsconfig tsconfig.scripts.json scripts/sync-oil-slick-pricing.ts
 //
+// Options:
+//   --dry-run       Preview changes without applying
+//   --csv <path>    Path to CSV file (default: "kk export.csv" in repo root)
+//   --vendor <name> Vendor to filter in CSV (default: "Oil Slick")
+//
 // Environment variables required:
 //   SHOPIFY_STORE_NAME, SHOPIFY_ACCESS_TOKEN
 // =============================================================================
 
+import * as fs from 'fs';
+import * as path from 'path';
+
 // ---------------------------------------------------------------------------
-// Kraft & Kitchen reference pricing (scraped from kraftandkitchen.com/products.json)
+// CSV parser — handles quoted fields with commas and newlines
+// ---------------------------------------------------------------------------
+
+function parseCSV(content: string): Record<string, string>[] {
+  const rows: string[][] = [];
+  let current: string[] = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i];
+    const next = content[i + 1];
+
+    if (inQuotes) {
+      if (ch === '"' && next === '"') {
+        field += '"';
+        i++; // skip escaped quote
+      } else if (ch === '"') {
+        inQuotes = false;
+      } else {
+        field += ch;
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ',') {
+        current.push(field);
+        field = '';
+      } else if (ch === '\n' || (ch === '\r' && next === '\n')) {
+        current.push(field);
+        field = '';
+        if (current.length > 1) rows.push(current);
+        current = [];
+        if (ch === '\r') i++; // skip \n after \r
+      } else {
+        field += ch;
+      }
+    }
+  }
+  // Last field/row
+  if (field || current.length > 0) {
+    current.push(field);
+    if (current.length > 1) rows.push(current);
+  }
+
+  if (rows.length === 0) return [];
+
+  const headers = rows[0];
+  return rows.slice(1).map(row => {
+    const obj: Record<string, string> = {};
+    for (let i = 0; i < headers.length; i++) {
+      obj[headers[i].trim()] = (row[i] || '').trim();
+    }
+    return obj;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Parse the KK export CSV into reference pricing data
 // ---------------------------------------------------------------------------
 
 interface RefVariant {
@@ -23,104 +90,76 @@ interface RefVariant {
 }
 
 interface RefProduct {
+  handle: string;
   title: string;
-  /** Lowercase keywords to match Shopify product titles */
-  matchKeywords: string[];
   variants: RefVariant[];
 }
 
-const KRAFT_KITCHEN_PRICING: RefProduct[] = [
-  {
-    title: 'Mylar Bags for Storage',
-    matchKeywords: ['mylar', 'bags', 'storage'],
-    variants: [
-      { title: '1g / 100 / Matte Black', sku: 'MYLAR-G-100B', price: '15.00', compare_at_price: '30.00' },
-      { title: '1g / 100 / Matte Black w/ window', sku: 'MYLAR-G-100BW', price: '15.00', compare_at_price: '30.00' },
-      { title: '1g / 500 / Matte Black', sku: 'MYLAR-G-500B', price: '50.00', compare_at_price: '100.00' },
-      { title: '1g / 500 / Matte Black w/ window', sku: 'MYLAR-G-500BW', price: '50.00', compare_at_price: '100.00' },
-      { title: '1g / 1000 / Matte Black', sku: 'MYLAR-G-1000B', price: '75.00', compare_at_price: '150.00' },
-      { title: '1g / 1000 / Matte Black w/ window', sku: 'MYLAR-G-1000BW', price: '75.00', compare_at_price: '150.00' },
-      { title: '1g / 5000 / Matte Black', sku: 'MYLAR-G-5000B', price: '300.00', compare_at_price: '600.00' },
-      { title: '1g / 5000 / Matte Black w/ window', sku: 'MYLAR-G-5000BW', price: '300.00', compare_at_price: '600.00' },
-      { title: '1/8oz / 100 / Matte Black', sku: 'MYLAR-E-100B', price: '22.00', compare_at_price: '44.00' },
-      { title: '1/8oz / 100 / Matte Black w/ window', sku: 'MYLAR-E-100BW', price: '22.00', compare_at_price: '44.00' },
-      { title: '1/8oz / 500 / Matte Black', sku: 'MYLAR-E-500B', price: '90.00', compare_at_price: '180.00' },
-      { title: '1/8oz / 500 / Matte Black w/ window', sku: 'MYLAR-E-500BW', price: '90.00', compare_at_price: '180.00' },
-      { title: '1/8oz / 1000 / Matte Black', sku: 'MYLAR-E-1000B', price: '120.00', compare_at_price: '240.00' },
-      { title: '1/8oz / 1000 / Matte Black w/ window', sku: 'MYLAR-E-1000BW', price: '120.00', compare_at_price: '240.00' },
-      { title: '1/8oz / 5000 / Matte Black', sku: 'MYLAR-E-5000B', price: '550.00', compare_at_price: '1100.00' },
-      { title: '1/8oz / 5000 / Matte Black w/ window', sku: 'MYLAR-E-5000BW', price: '550.00', compare_at_price: '1100.00' },
-      { title: '1/4oz / 100 / Matte Black', sku: 'MYLAR-Q-100B', price: '25.00', compare_at_price: '50.00' },
-      { title: '1/4oz / 100 / Matte Black w/ window', sku: 'MYLAR-Q-100BW', price: '25.00', compare_at_price: '50.00' },
-      { title: '1/4oz / 500 / Matte Black', sku: 'MYLAR-Q-500B', price: '97.50', compare_at_price: '195.00' },
-      { title: '1/4oz / 500 / Matte Black w/ window', sku: 'MYLAR-Q-500BW', price: '97.50', compare_at_price: '195.00' },
-      { title: '1/4oz / 1000 / Matte Black', sku: 'MYLAR-Q-1000B', price: '130.00', compare_at_price: '260.00' },
-      { title: '1/4oz / 1000 / Matte Black w/ window', sku: 'MYLAR-Q-1000BW', price: '130.00', compare_at_price: '260.00' },
-      { title: '1/4oz / 5000 / Matte Black', sku: 'MYLAR-Q-5000B', price: '600.00', compare_at_price: '1200.00' },
-      { title: '1/4oz / 5000 / Matte Black w/ window', sku: 'MYLAR-Q-5000BW', price: '600.00', compare_at_price: '1200.00' },
-      { title: '1/2oz / 100 / Matte Black', sku: 'MYLAR-H-100B', price: '30.00', compare_at_price: '60.00' },
-      { title: '1/2oz / 100 / Matte Black w/ window', sku: 'MYLAR-H-100BW', price: '30.00', compare_at_price: '60.00' },
-      { title: '1/2oz / 500 / Matte Black', sku: 'MYLAR-H-500B', price: '100.00', compare_at_price: '200.00' },
-      { title: '1/2oz / 500 / Matte Black w/ window', sku: 'MYLAR-H-500BW', price: '100.00', compare_at_price: '200.00' },
-      { title: '1/2oz / 1000 / Matte Black', sku: 'MYLAR-H-1000B', price: '150.00', compare_at_price: '300.00' },
-      { title: '1/2oz / 1000 / Matte Black w/ window', sku: 'MYLAR-H-1000BW', price: '150.00', compare_at_price: '300.00' },
-      { title: '1/2oz / 5000 / Matte Black', sku: 'MYLAR-H-5000B', price: '725.00', compare_at_price: '1500.00' },
-      { title: '1/2oz / 5000 / Matte Black w/ window', sku: 'MYLAR-H-5000BW', price: '725.00', compare_at_price: '1500.00' },
-      { title: 'Pre-roll / 100 / Matte Black w/ window', sku: 'MYLAR-PR-100', price: '22.00', compare_at_price: '44.00' },
-      { title: 'Pre-roll / 500 / Matte Black w/ window', sku: 'MYLAR-PR-500', price: '80.00', compare_at_price: '160.00' },
-      { title: 'Pre-roll / 1000 / Matte Black w/ window', sku: 'MYLAR-PR-1000', price: '120.00', compare_at_price: '240.00' },
-      { title: 'Pre-roll / 5000 / Matte Black w/ window', sku: 'MYLAR-PR-5000', price: '550.00', compare_at_price: '1100.00' },
-      { title: '1oz 1000 Matte Black w/ window / 1000 / Matte Black w/ window', sku: 'B0DJ1N955G', price: '170.00', compare_at_price: '30.00' },
-    ],
-  },
-  {
-    title: '116mm Opaque Child Resistant Tube',
-    matchKeywords: ['116mm', 'child resistant', 'tube'],
-    variants: [
-      { title: '10', sku: 'PREROLL', price: '7.50', compare_at_price: null },
-      { title: '100', sku: 'PREROLL-2', price: '30.00', compare_at_price: null },
-      { title: '500', sku: 'PREROLL-3', price: '75.00', compare_at_price: null },
-      { title: '1000', sku: 'PREROLL-4', price: '110.00', compare_at_price: null },
-      { title: '5000', sku: 'PREROLL-5', price: '475.00', compare_at_price: null },
-    ],
-  },
-  {
-    title: '7ml UV Resistant Round Bottom Jar with Child Resistant Black Lids',
-    matchKeywords: ['7ml', 'uv', 'jar'],
-    variants: [
-      { title: '1 (SAMPLE ONLY 5 MAX)', sku: '', price: '8.00', compare_at_price: null },
-      { title: '80', sku: '7mluv - 80', price: '66.00', compare_at_price: '132.00' },
-      { title: '160', sku: '', price: '110.00', compare_at_price: '220.00' },
-      { title: '320', sku: '', price: '211.20', compare_at_price: '422.40' },
-      { title: '1280', sku: '', price: '827.20', compare_at_price: '1650.00' },
-      { title: '2560', sku: '', price: '1240.00', compare_at_price: '1480.00' },
-    ],
-  },
-  {
-    title: '3oz Glass Jar with Black CR Lid',
-    matchKeywords: ['3oz', 'glass jar', 'cr lid'],
-    variants: [
-      { title: '1 SAMPLE 5 MAX', sku: '3OZCR-1', price: '5.00', compare_at_price: '15.00' },
-      { title: '50', sku: '3OZCR-50', price: '52.00', compare_at_price: '65.00' },
-      { title: '150', sku: '3OZCR-150', price: '120.00', compare_at_price: '125.00' },
-      { title: '600', sku: '3OZCR-600', price: '450.00', compare_at_price: '580.00' },
-      { title: '1500', sku: '3OZCR-1500', price: '1080.00', compare_at_price: '2555.00' },
-      { title: '4500', sku: '3OZCR-4500', price: '2152.00', compare_at_price: '2690.00' },
-    ],
-  },
-  {
-    title: '5ml Screw Top Jar with Black Lids',
-    matchKeywords: ['5ml', 'screw top', 'jar'],
-    variants: [
-      { title: '1 (SAMPLE ONLY 5 MAX)', sku: '5MLST-1', price: '5.00', compare_at_price: null },
-      { title: '100', sku: '5MLST-100', price: '40.00', compare_at_price: '88.12' },
-      { title: '200', sku: '5MLST-250', price: '67.20', compare_at_price: '135.00' },
-      { title: '500', sku: '5MLST-500', price: '175.00', compare_at_price: '350.00' },
-      { title: '1000', sku: '5MLST-1000', price: '240.00', compare_at_price: '500.00' },
-      { title: '5000', sku: '5MLST-5000', price: '1080.00', compare_at_price: '2200.00' },
-    ],
-  },
-];
+function loadPricingFromCSV(csvPath: string, vendorFilter: string): RefProduct[] {
+  const content = fs.readFileSync(csvPath, 'utf8');
+  const rows = parseCSV(content);
+
+  const products: RefProduct[] = [];
+  let currentProduct: RefProduct | null = null;
+  let currentHandle = '';
+
+  for (const row of rows) {
+    const handle = row['Handle'] || '';
+    const vendor = row['Vendor'] || '';
+    const title = row['Title'] || '';
+    const variantPrice = row['Variant Price'] || '';
+    const compareAt = row['Variant Compare At Price'] || '';
+    const sku = row['Variant SKU'] || '';
+    const opt1 = row['Option1 Value'] || '';
+    const opt2 = row['Option2 Value'] || '';
+    const opt3 = row['Option3 Value'] || '';
+
+    // New product (handle present)
+    if (handle) {
+      // Save previous product if it was Oil Slick
+      if (currentProduct && currentProduct.variants.length > 0) {
+        products.push(currentProduct);
+      }
+      currentHandle = handle;
+
+      // Check vendor — only on the first row of each product
+      if (vendor.toLowerCase() === vendorFilter.toLowerCase()) {
+        currentProduct = { handle, title, variants: [] };
+      } else {
+        currentProduct = null;
+      }
+    }
+
+    // Skip if not an Oil Slick product
+    if (!currentProduct) continue;
+
+    // Build variant title from options
+    const optParts = [opt1, opt2, opt3].filter(Boolean);
+    const variantTitle = optParts.join(' / ') || 'Default';
+
+    if (variantPrice) {
+      currentProduct.variants.push({
+        title: variantTitle,
+        sku,
+        price: formatPrice(variantPrice),
+        compare_at_price: compareAt ? formatPrice(compareAt) : null,
+      });
+    }
+  }
+
+  // Don't forget the last product
+  if (currentProduct && currentProduct.variants.length > 0) {
+    products.push(currentProduct);
+  }
+
+  return products;
+}
+
+function formatPrice(p: string): string {
+  const num = parseFloat(p);
+  if (isNaN(num)) return p;
+  return num.toFixed(2);
+}
 
 // ---------------------------------------------------------------------------
 // Shopify API helpers (standalone — no imports from src/lib to avoid Next.js deps)
@@ -189,7 +228,6 @@ function extractId(gid: string): string {
   return gid.split('/').pop() || gid;
 }
 
-// Simple rate limiter: wait between Shopify REST API calls
 async function wait(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -266,25 +304,32 @@ async function fetchOilSlickProducts(): Promise<ShopifyProduct[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Matching logic
+// Matching logic — matches Shopify variants to CSV reference data
 // ---------------------------------------------------------------------------
 
 function normalizeStr(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-function findRefProduct(shopifyProduct: ShopifyProduct): RefProduct | null {
+function findRefProduct(shopifyProduct: ShopifyProduct, refProducts: RefProduct[]): RefProduct | null {
   const shopTitle = normalizeStr(shopifyProduct.title);
 
-  // Try exact title match first
-  for (const ref of KRAFT_KITCHEN_PRICING) {
+  // Try exact normalized title match
+  for (const ref of refProducts) {
     if (normalizeStr(ref.title) === shopTitle) return ref;
   }
 
-  // Try keyword matching
-  for (const ref of KRAFT_KITCHEN_PRICING) {
-    const allMatch = ref.matchKeywords.every(kw => shopTitle.includes(kw.toLowerCase()));
-    if (allMatch) return ref;
+  // Try checking if shop title contains all significant words from ref title
+  for (const ref of refProducts) {
+    const refWords = normalizeStr(ref.title).split(' ').filter(w => w.length > 2);
+    if (refWords.length > 0 && refWords.every(w => shopTitle.includes(w))) return ref;
+  }
+
+  // Try checking if ref title contains all significant words from shop title
+  for (const ref of refProducts) {
+    const shopWords = shopTitle.split(' ').filter(w => w.length > 2);
+    const refNorm = normalizeStr(ref.title);
+    if (shopWords.length > 0 && shopWords.every(w => refNorm.includes(w))) return ref;
   }
 
   return null;
@@ -303,14 +348,14 @@ function findRefVariant(shopifyVariant: ShopifyVariant, refProduct: RefProduct):
     }
   }
 
-  // 2. Match by exact variant title
+  // 2. Match by exact normalized variant title
   for (const ref of refProduct.variants) {
     if (normalizeStr(ref.title) === shopVTitle) {
       return ref;
     }
   }
 
-  // 3. Match by variant title containing the ref title or vice versa
+  // 3. Match by variant title containment
   for (const ref of refProduct.variants) {
     const refNorm = normalizeStr(ref.title);
     if (shopVTitle.includes(refNorm) || refNorm.includes(shopVTitle)) {
@@ -329,6 +374,7 @@ interface PriceUpdate {
   shopifyVariantGid: string;
   productTitle: string;
   variantTitle: string;
+  sku: string | null;
   currentPrice: string;
   currentCompareAt: string | null;
   newPrice: string;
@@ -385,6 +431,7 @@ async function applyPriceUpdate(update: PriceUpdate, dryRun: boolean): Promise<b
 // ---------------------------------------------------------------------------
 // Logging
 // ---------------------------------------------------------------------------
+
 function log(msg: string) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   console.log(`[${ts}] ${msg}`);
@@ -396,16 +443,30 @@ function logError(msg: string) {
 }
 
 // ---------------------------------------------------------------------------
+// CLI argument parsing
+// ---------------------------------------------------------------------------
+
+function getArg(flag: string): string | null {
+  const args = process.argv.slice(2);
+  const idx = args.indexOf(flag);
+  return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : null;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
+
 async function main() {
   const dryRun = process.argv.includes('--dry-run');
+  const csvPath = getArg('--csv') || path.join(process.cwd(), 'kk export.csv');
+  const vendorFilter = getArg('--vendor') || 'Oil Slick';
 
   console.log('\n' + '='.repeat(70));
-  console.log('  Oil Slick Pricing Sync — kraftandkitchen.com reference');
+  console.log('  Oil Slick Pricing Sync — from Kraft & Kitchen CSV export');
   console.log('='.repeat(70));
   console.log(`  Dry run:  ${dryRun}`);
-  console.log(`  Source:   kraftandkitchen.com (${KRAFT_KITCHEN_PRICING.length} products, ${KRAFT_KITCHEN_PRICING.reduce((s, p) => s + p.variants.length, 0)} variants)`);
+  console.log(`  CSV:      ${csvPath}`);
+  console.log(`  Vendor:   ${vendorFilter}`);
   console.log('='.repeat(70) + '\n');
 
   // Validate env
@@ -414,11 +475,33 @@ async function main() {
     process.exit(1);
   }
 
+  // Load CSV
+  if (!fs.existsSync(csvPath)) {
+    console.error(`ERROR: CSV file not found: ${csvPath}`);
+    console.error('  Place the Kraft & Kitchen Shopify products export as "kk export.csv" in the repo root');
+    process.exit(1);
+  }
+
+  log(`Loading pricing from CSV: ${csvPath}`);
+  const refProducts = loadPricingFromCSV(csvPath, vendorFilter);
+  const totalRefVariants = refProducts.reduce((s, p) => s + p.variants.length, 0);
+  log(`Loaded ${refProducts.length} "${vendorFilter}" products, ${totalRefVariants} variants from CSV`);
+
+  for (const p of refProducts) {
+    log(`  - ${p.title} (${p.variants.length} variants)`);
+  }
+  console.log('');
+
+  if (refProducts.length === 0) {
+    log(`No "${vendorFilter}" products found in CSV. Check the Vendor column.`);
+    process.exit(0);
+  }
+
   // Fetch Oil Slick products from Shopify
   log('Fetching Oil Slick vendor products from Shopify...');
   const shopifyProducts = await fetchOilSlickProducts();
   const totalVariants = shopifyProducts.reduce((s, p) => s + p.variants.length, 0);
-  log(`Found ${shopifyProducts.length} products, ${totalVariants} variants\n`);
+  log(`Found ${shopifyProducts.length} products, ${totalVariants} variants on Shopify\n`);
 
   if (shopifyProducts.length === 0) {
     log('No Oil Slick products found on Shopify. Make sure products have vendor set to "Oil Slick".');
@@ -431,14 +514,14 @@ async function main() {
   const unmatchedProducts: string[] = [];
 
   for (const product of shopifyProducts) {
-    const refProduct = findRefProduct(product);
+    const refProduct = findRefProduct(product, refProducts);
     if (!refProduct) {
       unmatchedProducts.push(product.title);
-      log(`WARNING: No matching Kraft & Kitchen product for "${product.title}"`);
+      log(`WARNING: No matching CSV product for Shopify product "${product.title}"`);
       continue;
     }
 
-    log(`Matched product: "${product.title}" -> "${refProduct.title}"`);
+    log(`Matched: "${product.title}" -> CSV "${refProduct.title}"`);
 
     for (const variant of product.variants) {
       const refVariant = findRefVariant(variant, refProduct);
@@ -461,6 +544,7 @@ async function main() {
         shopifyVariantGid: variant.id,
         productTitle: product.title,
         variantTitle: variant.title,
+        sku: variant.sku,
         currentPrice: variant.price,
         currentCompareAt: variant.compareAtPrice,
         newPrice: refVariant.price,
@@ -484,7 +568,7 @@ async function main() {
   console.log('-'.repeat(70) + '\n');
 
   if (unmatched.length > 0) {
-    log('Unmatched variants (on Shopify but no Kraft & Kitchen match):');
+    log('Unmatched variants (on Shopify but no CSV match):');
     for (const u of unmatched) {
       log(`  - ${u.product} / ${u.variant} (SKU: ${u.sku || 'none'})`);
     }
@@ -493,7 +577,12 @@ async function main() {
 
   // Apply updates
   if (updates.length === 0) {
-    log('No variants to update.');
+    log('No variants matched. Nothing to update.');
+    process.exit(0);
+  }
+
+  if (needsUpdate.length === 0) {
+    log('All matched variants already have correct pricing. Nothing to update.');
     process.exit(0);
   }
 
@@ -530,10 +619,10 @@ async function main() {
   console.log('\n' + '='.repeat(70));
   console.log(`  Sync ${dryRun ? 'Preview' : 'Complete'}`);
   console.log('='.repeat(70));
-  console.log(`  Total matched:     ${updates.length}`);
-  console.log(`  Already correct:   ${skipped}`);
-  console.log(`  Updated:           ${success}`);
-  console.log(`  Failed:            ${failed}`);
+  console.log(`  Total matched:      ${updates.length}`);
+  console.log(`  Already correct:    ${skipped}`);
+  console.log(`  ${dryRun ? 'Would update' : 'Updated'}:        ${success}`);
+  console.log(`  Failed:             ${failed}`);
   console.log(`  Unmatched variants: ${unmatched.length}`);
   console.log(`  Unmatched products: ${unmatchedProducts.length}`);
   console.log('='.repeat(70) + '\n');

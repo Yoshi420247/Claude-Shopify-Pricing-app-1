@@ -1,0 +1,52 @@
+name: Sync Oil Slick Pricing
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (preview changes only, do NOT apply)'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  sync:
+    name: Sync Oil Slick prices from KK export
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify CSV exists
+        run: |
+          if [ ! -f "kk export.csv" ]; then
+            echo "ERROR: 'kk export.csv' not found in repo root."
+            echo "Upload the Kraft & Kitchen Shopify products export CSV to the repo first."
+            exit 1
+          fi
+          echo "Found 'kk export.csv' — $(wc -l < 'kk export.csv') lines"
+
+      - name: Run pricing sync
+        env:
+          SHOPIFY_STORE_NAME: ${{ secrets.SHOPIFY_STORE_NAME }}
+          SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+        run: |
+          ARGS=""
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+
+          echo "Running: npx tsx --tsconfig tsconfig.scripts.json scripts/sync-oil-slick-pricing.ts $ARGS"
+          eval npx tsx --tsconfig tsconfig.scripts.json scripts/sync-oil-slick-pricing.ts $ARGS
