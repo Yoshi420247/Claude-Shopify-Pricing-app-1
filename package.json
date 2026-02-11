@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "batch-analyze": "tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts"
+    "batch-analyze": "tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts",
+    "sync-oil-slick": "tsx --tsconfig tsconfig.scripts.json scripts/sync-oil-slick-pricing.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.47.0",
