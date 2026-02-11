@@ -12,17 +12,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Invalid parameters' }, { status: 400 });
     }
 
+    const db = createServerClient();
+
+    // Load current price before updating (for revert support)
+    const { data: variant } = await db
+      .from('variants')
+      .select('price')
+      .eq('id', variantId)
+      .single();
+
     // Update price on Shopify
     await updateVariantPrice(variantId, newPrice);
 
     // Update local variant price in Supabase
-    const db = createServerClient();
     await db.from('variants').update({ price: newPrice }).eq('id', variantId);
 
-    // Mark analysis as applied
+    // Mark analysis as applied (save old price for revert support)
     if (productId) {
       await db.from('analyses')
-        .update({ applied: true, applied_at: new Date().toISOString() })
+        .update({ applied: true, applied_at: new Date().toISOString(), previous_price: variant?.price ?? null })
         .match({ product_id: productId, variant_id: variantId });
     }
 
