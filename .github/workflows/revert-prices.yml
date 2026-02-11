@@ -3,12 +3,13 @@ name: Revert Prices
 on:
   workflow_dispatch:
     inputs:
-      since:
-        description: 'Revert prices applied since this date (e.g. 2026-02-10). Uses previous_price stored in DB.'
+      runs:
+        description: 'Number of recent batch runs to revert (downloads & parses their logs)'
         required: true
         type: string
+        default: '3'
       dry_run:
-        description: 'Dry run (preview what would be reverted, do NOT change prices)'
+        description: 'Dry run (preview only, do NOT change prices)'
         required: true
         type: boolean
         default: true
@@ -39,8 +40,9 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SHOPIFY_STORE_NAME: ${{ secrets.SHOPIFY_STORE_NAME }}
           SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ARGS="--since '${{ inputs.since }}'"
+          ARGS="--runs ${{ inputs.runs }}"
 
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             ARGS="$ARGS --dry-run"
