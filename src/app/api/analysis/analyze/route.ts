@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
-import { runFullAnalysis, saveAnalysis } from '@/lib/pricing-engine';
+import { runVolumeAwareAnalysis, saveAnalysis } from '@/lib/pricing-engine';
 import type { Product, Variant, Settings } from '@/types';
 
 export const dynamic = 'force-dynamic';
@@ -26,14 +26,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Product not found' }, { status: 404 });
     }
 
-    // Load variant
-    const { data: variant, error: vErr } = await db
+    // Load ALL variants for this product (needed for quantity group detection)
+    const { data: allVariants, error: avErr } = await db
       .from('variants')
       .select('*')
-      .eq('id', variantId)
-      .single();
-    if (vErr || !variant) {
-      return NextResponse.json({ success: false, error: 'Variant not found' }, { status: 404 });
+      .eq('product_id', productId);
+    if (avErr || !allVariants || allVariants.length === 0) {
+      return NextResponse.json({ success: false, error: 'No variants found for product' }, { status: 404 });
     }
 
     // Load settings
@@ -48,32 +47,72 @@ export async function POST(req: NextRequest) {
       settings.ai_unrestricted = ai_unrestricted;
     }
 
-    // Run full analysis pipeline
-    const result = await runFullAnalysis(
+    // Run volume-aware analysis pipeline
+    // If the product has quantity variants, this will:
+    //   - AI-analyze only the base (lowest qty) variant
+    //   - Derive all other quantity variants via power-law formula
+    // If not, it runs normal AI analysis on the requested variant.
+    const { results, quantityGroups } = await runVolumeAwareAnalysis(
       product as Product,
-      variant as Variant,
-      settings
+      allVariants as Variant[],
+      variantId,
+      settings,
     );
 
-    // Save to database
-    await saveAnalysis(productId, variantId, result);
+    // Save all results to database
+    for (const r of results) {
+      await saveAnalysis(r.productId, r.variantId, r.analysisResult, r.volumeMeta);
+    }
 
     // Log activity
-    const priceStr = result.suggestedPrice ? `$${result.suggestedPrice.toFixed(2)}` : 'N/A';
-    const confidence = result.confidence || 'unknown';
-    await db.from('activity_log').insert({
-      message: `Analyzed: ${product.title} (${variant.title || 'Default'}) → ${priceStr} (${confidence})`,
-      type: result.error ? 'error' : 'success',
-    });
+    const targetResult = results.find(r => r.variantId === variantId) || results[0];
+    const targetVariant = allVariants.find((v: Variant) => v.id === variantId);
+    const priceStr = targetResult.analysisResult.suggestedPrice
+      ? `$${targetResult.analysisResult.suggestedPrice.toFixed(2)}`
+      : 'N/A';
+    const confidence = targetResult.analysisResult.confidence || 'unknown';
 
-    // Return the saved analysis
+    if (quantityGroups) {
+      const derivedCount = results.filter(r => r.volumeMeta.pricing_method === 'volume_formula').length;
+      await db.from('activity_log').insert({
+        message: `Analyzed: ${product.title} (${targetVariant?.title || 'Default'}) → ${priceStr} (${confidence}) + ${derivedCount} qty variants derived via volume formula`,
+        type: targetResult.analysisResult.error ? 'error' : 'success',
+      });
+    } else {
+      await db.from('activity_log').insert({
+        message: `Analyzed: ${product.title} (${targetVariant?.title || 'Default'}) → ${priceStr} (${confidence})`,
+        type: targetResult.analysisResult.error ? 'error' : 'success',
+      });
+    }
+
+    // Return the saved analysis for the requested variant
     const { data: savedAnalysis } = await db
       .from('analyses')
       .select('*')
       .match({ product_id: productId, variant_id: variantId })
       .single();
 
-    return NextResponse.json({ success: true, analysis: savedAnalysis });
+    // Also return sibling analyses if quantity groups were detected
+    let siblingAnalyses = null;
+    if (quantityGroups && results.length > 1) {
+      const siblingIds = results
+        .filter(r => r.variantId !== variantId)
+        .map(r => r.variantId);
+      if (siblingIds.length > 0) {
+        const { data: siblings } = await db
+          .from('analyses')
+          .select('*')
+          .in('variant_id', siblingIds);
+        siblingAnalyses = siblings;
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      analysis: savedAnalysis,
+      siblingAnalyses,
+      quantityGroupDetected: !!quantityGroups,
+    });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';
     console.error('Analysis error:', message);

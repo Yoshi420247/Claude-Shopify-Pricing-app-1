@@ -80,6 +80,23 @@ export interface Analysis {
   error: string | null;
   analyzed_at: string;
   created_at: string;
+  // Volume pricing metadata — set when price was derived from a base variant
+  pricing_method: 'ai' | 'volume_formula' | null;
+  volume_pricing: VolumePricingMeta | null;
+}
+
+/** Metadata stored on analyses that were derived via the volume discount formula */
+export interface VolumePricingMeta {
+  base_variant_id: string;
+  base_price: number;
+  base_qty: number;
+  variant_qty: number;
+  exponent: number;
+  rounding_method: string;
+  raw_price: number;
+  per_unit: number;
+  discount_from_base_percent: number;
+  premium_multiplier: number | null;
 }
 
 export interface ActivityLog {
