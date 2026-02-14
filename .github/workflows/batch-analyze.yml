@@ -3,6 +3,11 @@ name: Batch Price Analysis
 on:
   workflow_dispatch:
     inputs:
+      product_id:
+        description: 'Shopify product ID(s) — numeric ID, admin URL, or handle. Comma-separate for multiple. Leave empty for all products.'
+        required: false
+        type: string
+        default: ''
       vendor:
         description: 'Vendor/brand name to filter (leave empty for ALL vendors)'
         required: false
@@ -105,7 +110,10 @@ jobs:
         run: |
           ARGS="--status ${{ inputs.status }} --concurrency ${{ inputs.concurrency }} --search-mode ${{ inputs.search_mode }} --provider ${{ inputs.provider }}"
 
-          if [ -n "${{ inputs.failed_report }}" ]; then
+          if [ -n "${{ inputs.product_id }}" ]; then
+            # Single/multi product mode: analyze specific product(s)
+            ARGS="$ARGS --product-id \"${{ inputs.product_id }}\""
+          elif [ -n "${{ inputs.failed_report }}" ]; then
             # Re-run mode: only process previously failed products
             ARGS="--failed-report ${{ inputs.failed_report }} --concurrency ${{ inputs.concurrency }} --search-mode ${{ inputs.search_mode }} --provider ${{ inputs.provider }}"
           else
