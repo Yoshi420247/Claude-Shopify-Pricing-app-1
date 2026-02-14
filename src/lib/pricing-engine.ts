@@ -176,16 +176,23 @@ export async function analyzePricing(
     settings
   );
 
+  // Primary price authority domains — their prices are the ultimate benchmark
+  const PRIMARY_AUTHORITIES = ['dragonchewer.com', 'marijuanapackaging.com'];
+
   // Build competitor sections
   let competitorSection = '';
   if (competitorData.competitors.length > 0) {
     competitorSection = `EXTRACTED COMPETITOR PRICES (${competitorData.competitors.length} found):
-${competitorData.competitors.map((c, i) =>
-  `${i + 1}. ${c.source}: $${c.price.toFixed(2)}${c.isKnownRetailer ? ' [VERIFIED RETAILER]' : ''} [Weight: ${c.isKnownRetailer ? 'HIGH' : 'MEDIUM'}]
+${competitorData.competitors.map((c, i) => {
+  const isPrimary = PRIMARY_AUTHORITIES.some(d => c.source.includes(d));
+  const weightLabel = isPrimary ? 'CRITICAL' : c.isKnownRetailer ? 'HIGH' : 'MEDIUM';
+  return `${i + 1}. ${c.source}: $${c.price.toFixed(2)}${isPrimary ? ' [⭐ PRIMARY PRICE AUTHORITY]' : c.isKnownRetailer ? ' [VERIFIED RETAILER]' : ''} [Weight: ${weightLabel}]
    URL: ${c.url}
    Title: ${c.title}
-   Extraction: ${c.extractionMethod}`
-).join('\n\n')}
+   Extraction: ${c.extractionMethod}`;
+}).join('\n\n')}
+
+NOTE: Prices from dragonchewer.com and marijuanapackaging.com are the PRIMARY competitive benchmarks. If present, their prices should heavily influence your recommendation.
 
 COMPETITOR INTELLIGENCE SUMMARY:
 - Weighted Median Price: $${competitorIntel.weightedMedian.toFixed(2)}
