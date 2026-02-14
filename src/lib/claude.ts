@@ -6,8 +6,14 @@ import { parseAIJson } from './openai';
 import type { ProductIdentity } from '@/types';
 import type { CompetitorPrice, CompetitorSearchResult } from './competitors';
 
+// PRIMARY price authority sites — search these FIRST, weight their prices highest
+const PRIMARY_PRICE_AUTHORITIES = [
+  'dragonchewer.com', 'marijuanapackaging.com',
+];
+
 // Known retail smoke shop domains — same list as openai-search.ts
 const RETAIL_SMOKE_SHOPS = [
+  'dragonchewer.com', 'marijuanapackaging.com',
   'smokea.com', 'dankgeek.com', 'everythingfor420.com', 'grasscity.com',
   'dailyhighclub.com', 'brotherswithglass.com', 'smokecartel.com',
   'headshop.com', 'thickassglass.com', 'gogopipes.com', 'kings-pipe.com',
@@ -269,6 +275,8 @@ export async function searchCompetitorsClaude(
   const productName = identity.identifiedAs || product.title;
   const brand = product.vendor || identity.brand || '';
 
+  const isOilSlick = (brand || '').toLowerCase().includes('oil slick');
+
   const searchPrompt = `Search for retail prices of this smoke shop product and return competitor pricing data.
 
 PRODUCT: ${product.title}
@@ -278,11 +286,15 @@ TYPE: ${identity.productType || product.productType || 'Unknown'}
 KEY FEATURES: ${(identity.keyFeatures || []).join(', ')}
 
 INSTRUCTIONS:
-1. Search for this specific product (or very similar products) at online smoke shops and retail stores
-2. Focus on finding actual retail sale prices (NOT wholesale, NOT bulk pricing)
-3. Prioritize known smoke shop retailers like: smokea.com, grasscity.com, dankgeek.com, everythingfor420.com, brotherswithglass.com, smokecartel.com
-4. Exclude wholesale sites (alibaba, dhgate, etc.)
-5. Include the URL, store name, product title, and price for each result
+1. **SEARCH THESE SITES FIRST** (primary price authorities — their prices carry the most weight):
+   - dragonchewer.com — search site:dragonchewer.com for "${productName}"
+   - marijuanapackaging.com — search site:marijuanapackaging.com for "${productName}"
+   ${isOilSlick ? '⚠️ This is an OIL SLICK product — dragonchewer.com and marijuanapackaging.com are the LARGEST direct competitors. Their prices MUST be included if they carry this or similar products.' : ''}
+2. Then search other online smoke shops and retail stores for additional data points
+3. Focus on finding actual retail sale prices (NOT wholesale, NOT bulk pricing)
+4. Also check: smokea.com, grasscity.com, dankgeek.com, everythingfor420.com, brotherswithglass.com, smokecartel.com
+5. Exclude wholesale sites (alibaba, dhgate, etc.)
+6. Include the URL, store name, product title, and price for each result
 
 Return JSON (no markdown, just raw JSON):
 {
@@ -396,7 +408,9 @@ export async function searchCompetitorsClaudeAmazon(
   const productName = identity.identifiedAs || product.title;
   const brand = product.vendor || identity.brand || '';
 
-  const searchPrompt = `Search Amazon.com for this product and return pricing data.
+  const isOilSlick = (brand || '').toLowerCase().includes('oil slick');
+
+  const searchPrompt = `Search for this product on Amazon AND key competitor sites, and return pricing data.
 
 PRODUCT: ${product.title}
 IDENTIFIED AS: ${productName}
@@ -405,27 +419,30 @@ TYPE: ${identity.productType || product.productType || 'Unknown'}
 KEY FEATURES: ${(identity.keyFeatures || []).join(', ')}
 
 INSTRUCTIONS:
-1. Search ONLY on amazon.com for this product or very similar products
-2. Use search queries like: site:amazon.com ${productName} ${brand}
-3. Find actual Amazon retail/sale prices (NOT third-party wholesale)
-4. Include the Amazon URL, listing title, and price for each result
-5. If no exact match, include similar products in the same category on Amazon
+1. **SEARCH THESE SITES FIRST** (primary price authorities):
+   - dragonchewer.com — search site:dragonchewer.com for "${productName}"
+   - marijuanapackaging.com — search site:marijuanapackaging.com for "${productName}"
+   ${isOilSlick ? '⚠️ This is an OIL SLICK product — dragonchewer.com and marijuanapackaging.com are the LARGEST direct competitors. Their prices MUST be included.' : ''}
+2. Then search amazon.com for this product or very similar products
+3. Find actual retail/sale prices (NOT wholesale, NOT bulk pricing)
+4. Include the URL, store name, listing title, and price for each result
+5. If no exact match, include similar products in the same category
 
 Return JSON (no markdown, just raw JSON):
 {
   "competitors": [
     {
-      "source": "amazon.com",
-      "url": "full Amazon URL",
-      "title": "Amazon listing title",
+      "source": "domain.com",
+      "url": "full URL",
+      "title": "listing title",
       "price": 12.99,
       "isKnownRetailer": true
     }
   ],
-  "searchSummary": "brief summary of what was found on Amazon"
+  "searchSummary": "brief summary of what was found"
 }
 
-Return up to 5 Amazon listings if available. Only include prices between $1 and $2000.`;
+Return up to 8 listings if available. Only include prices between $1 and $2000.`;
 
   try {
     const result = await claudeRateLimiter.execute(async () => {
