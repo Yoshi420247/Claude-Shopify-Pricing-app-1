@@ -4,26 +4,33 @@
 
 import { chatCompletion, parseAIJson } from './openai';
 import { claudeChatCompletion, searchCompetitorsClaude, searchCompetitorsClaudeAmazon } from './claude';
+import { geminiChatCompletion, searchCompetitorsGemini, searchCompetitorsGeminiAmazon } from './gemini';
 import { searchCompetitors, type CompetitorSearchResult } from './competitors';
 import { searchCompetitorsOpenAI, searchCompetitorsAmazon } from './openai-search';
 import { createServerClient } from './supabase';
 
 export type SearchMode = 'brave' | 'openai' | 'amazon' | 'none';
-export type Provider = 'openai' | 'claude';
+export type Provider = 'openai' | 'claude' | 'gemini';
 
 /** Get the appropriate chat completion function for the provider */
 function getCompletionFn(provider: Provider) {
-  return provider === 'claude' ? claudeChatCompletion : chatCompletion;
+  if (provider === 'claude') return claudeChatCompletion;
+  if (provider === 'gemini') return geminiChatCompletion;
+  return chatCompletion;
 }
 
 /** Get the default model for the provider */
 function getDefaultModel(provider: Provider): string {
-  return provider === 'claude' ? 'claude-sonnet-4-5-20250929' : 'gpt-5.2';
+  if (provider === 'claude') return 'claude-sonnet-4-5-20250929';
+  if (provider === 'gemini') return 'gemini-2.5-flash';
+  return 'gpt-5.2';
 }
 
 /** Get the cheap/fast model for the provider */
 function getFastModel(provider: Provider): string {
-  return provider === 'claude' ? 'claude-haiku-4-5-20251001' : 'gpt-4o-mini';
+  if (provider === 'claude') return 'claude-haiku-4-5-20251001';
+  if (provider === 'gemini') return 'gemini-2.0-flash';
+  return 'gpt-4o-mini';
 }
 
 // In-memory product identity cache — reuse across variants of the same product
@@ -125,7 +132,7 @@ Respond in JSON:
     ],
     maxTokens: 1200,
     jsonMode: true,
-    reasoningEffort: 'high',
+    reasoningEffort: 'medium', // Product categorization is straightforward — save on thinking tokens
   });
 
   return parseAIJson<ProductIdentity>(raw);
@@ -626,7 +633,7 @@ export async function runFullAnalysis(
   // Fast mode: use cheapest models, skip reflection + deliberation
   const model = fast
     ? getFastModel(provider)
-    : (provider === 'claude' ? getDefaultModel('claude') : (settings.openai_model || 'gpt-5.2'));
+    : (provider === 'claude' ? getDefaultModel('claude') : provider === 'gemini' ? getDefaultModel('gemini') : (settings.openai_model || 'gpt-5.2'));
   const reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'xhigh' = fast ? 'low' : 'high';
 
   try {
@@ -652,6 +659,9 @@ export async function runFullAnalysis(
       if (provider === 'claude') {
         onProgress?.('Searching Amazon (Claude web search)...');
         competitorData = await searchCompetitorsClaudeAmazon(productSearch, identity);
+      } else if (provider === 'gemini') {
+        onProgress?.('Searching Amazon (Gemini Google Search)...');
+        competitorData = await searchCompetitorsGeminiAmazon(productSearch, identity);
       } else {
         onProgress?.('Searching Amazon (OpenAI web search)...');
         competitorData = await searchCompetitorsAmazon(productSearch, identity);
@@ -664,6 +674,9 @@ export async function runFullAnalysis(
       if (provider === 'claude') {
         onProgress?.('Searching competitors (Claude web search)...');
         competitorData = await searchCompetitorsClaude(productSearch, identity);
+      } else if (provider === 'gemini') {
+        onProgress?.('Searching competitors (Gemini Google Search)...');
+        competitorData = await searchCompetitorsGemini(productSearch, identity);
       } else {
         onProgress?.('Searching competitors (OpenAI web search)...');
         competitorData = await searchCompetitorsOpenAI(productSearch, identity);
@@ -694,6 +707,8 @@ export async function runFullAnalysis(
           if (searchMode === 'amazon') {
             retryData = provider === 'claude'
               ? await searchCompetitorsClaudeAmazon(productSearch, retryIdentity)
+              : provider === 'gemini'
+              ? await searchCompetitorsGeminiAmazon(productSearch, retryIdentity)
               : await searchCompetitorsAmazon(productSearch, retryIdentity);
           } else if (searchMode === 'brave') {
             const { searchCompetitors: sc } = await import('./competitors');
@@ -701,6 +716,8 @@ export async function runFullAnalysis(
           } else {
             retryData = provider === 'claude'
               ? await searchCompetitorsClaude(productSearch, retryIdentity)
+              : provider === 'gemini'
+              ? await searchCompetitorsGemini(productSearch, retryIdentity)
               : await searchCompetitorsOpenAI(productSearch, retryIdentity);
           }
 
