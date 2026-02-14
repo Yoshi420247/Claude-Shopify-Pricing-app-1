@@ -11,6 +11,22 @@
 //   npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts \
 //     --vendor "Artist Name" --status active --concurrency 100
 //
+// Analyze a single product by Shopify ID (from the admin URL):
+//   npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts \
+//     --product-id 4480870645859
+//
+// Multiple products:
+//   npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts \
+//     --product-id 4480870645859,4480870645860,4480870645861
+//
+// Paste the full Shopify admin URL — the ID is extracted automatically:
+//   npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts \
+//     --product-id https://admin.shopify.com/store/myshop/products/4480870645859
+//
+// Or use the product handle (URL slug from storefront):
+//   npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts \
+//     --product-id 7ml-jar-black-clear
+//
 // Re-run failed products from a previous report:
 //   npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts \
 //     --failed-report reports/failed-products-2026-02-06.json
@@ -61,6 +77,7 @@ function parseArgs(): {
   provider: Provider;
   failedReport: string | null;
   markup: number | null;
+  productIds: string[] | null;
 } {
   const args = process.argv.slice(2);
   const get = (flag: string): string | null => {
@@ -82,6 +99,10 @@ function parseArgs(): {
   const rawProvider = get('--provider') || 'openai';
   const provider: Provider = rawProvider === 'claude' ? 'claude' : 'openai';
 
+  // Parse --product-id: accepts numeric IDs, Shopify admin URLs, or handles (comma-separated)
+  const rawProductId = get('--product-id');
+  const productIds = rawProductId ? parseProductIdArg(rawProductId) : null;
+
   return {
     vendor: get('--vendor'),
     status: get('--status') || 'active',
@@ -95,7 +116,29 @@ function parseArgs(): {
     provider,
     failedReport: get('--failed-report'),
     markup,
+    productIds,
   };
+}
+
+/**
+ * Parse --product-id argument into an array of identifiers.
+ * Accepts:
+ *   - Numeric Shopify product ID: "4480870645859"
+ *   - Comma-separated IDs: "4480870645859,4480870645860"
+ *   - Full Shopify admin URL: "https://admin.shopify.com/store/myshop/products/4480870645859"
+ *   - Product handle (URL slug): "7ml-jar-black-clear"
+ *
+ * Returns an array of strings — either numeric IDs or handles (resolved later).
+ */
+function parseProductIdArg(raw: string): string[] {
+  return raw.split(',').map(part => {
+    const trimmed = part.trim();
+    // Extract numeric ID from Shopify admin URL
+    const urlMatch = trimmed.match(/\/products\/(\d+)/);
+    if (urlMatch) return urlMatch[1];
+    // Already a number or a handle — pass through
+    return trimmed;
+  }).filter(Boolean);
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +535,7 @@ async function main() {
   console.log(`  AI Provider:    ${opts.provider.toUpperCase()}`);
   console.log(`  Limit:          ${opts.limit || 'none'}`);
   console.log(`  Failed report:  ${opts.failedReport || 'none'}`);
+  console.log(`  Product IDs:    ${opts.productIds ? opts.productIds.join(', ') : 'ALL (filtered by vendor/status)'}`);
   console.log(`  Markup:         ${opts.markup ? `${opts.markup}x cost (skip AI)` : 'none (use AI)'}`);
   console.log(`  Volume pricing: ENABLED (qty variants auto-derived from base)`);
   console.log('='.repeat(70) + '\n');
@@ -548,7 +592,70 @@ async function main() {
   // ---------------------------------------------------------------------------
   let toProcess: { product: Product; variant: Variant }[] = [];
 
-  if (opts.failedReport) {
+  if (opts.productIds) {
+    // --product-id mode: load specific products by numeric ID or handle
+    log(`Loading ${opts.productIds.length} specific product(s)...`);
+
+    // Separate numeric IDs from handles
+    const numericIds: string[] = [];
+    const handles: string[] = [];
+    for (const id of opts.productIds) {
+      if (/^\d+$/.test(id)) {
+        numericIds.push(id);
+      } else {
+        handles.push(id);
+      }
+    }
+
+    const allProducts: Product[] = [];
+
+    // Load by numeric ID
+    if (numericIds.length > 0) {
+      const { data, error } = await db
+        .from('products')
+        .select('*, variants(*)')
+        .in('id', numericIds);
+      if (error) {
+        logError(`Failed to load products by ID: ${error.message}`);
+        process.exit(1);
+      }
+      if (data) allProducts.push(...(data as Product[]));
+    }
+
+    // Load by handle
+    if (handles.length > 0) {
+      const { data, error } = await db
+        .from('products')
+        .select('*, variants(*)')
+        .in('handle', handles);
+      if (error) {
+        logError(`Failed to load products by handle: ${error.message}`);
+        process.exit(1);
+      }
+      if (data) allProducts.push(...(data as Product[]));
+    }
+
+    if (allProducts.length === 0) {
+      logError(`No products found matching: ${opts.productIds.join(', ')}`);
+      logError('Make sure you have synced products from Shopify first (run a sync).');
+      process.exit(1);
+    }
+
+    // Flatten to variant list — include ALL variants for each matched product
+    for (const product of allProducts) {
+      if (!product.variants || product.variants.length === 0) {
+        log(`  WARNING: ${product.title} has no variants`);
+        continue;
+      }
+      log(`  Found: ${product.title} (${product.variants.length} variants)`);
+      for (const variant of product.variants) {
+        toProcess.push({ product, variant });
+      }
+    }
+
+    log(`Loaded ${allProducts.length} product(s), ${toProcess.length} variants total`);
+
+  } else if (opts.failedReport) {
     // Re-run mode: load failed products from report
     log(`Loading failed products from report: ${opts.failedReport}`);
     const failedEntries = loadFailedReport(opts.failedReport);
