@@ -17,12 +17,12 @@ import type { CompetitorPrice, CompetitorSearchResult } from './competitors';
 
 // PRIMARY price authority sites — search these FIRST, weight their prices highest
 const PRIMARY_PRICE_AUTHORITIES = [
-  'dragonchewer.com', 'marijuanapackaging.com',
+  'dragonchewer.com', 'marijuanapackaging.com', 'greentechpackaging.com',
 ];
 
 // Known retail smoke shop domains — same list as openai-search.ts
 const RETAIL_SMOKE_SHOPS = [
-  'dragonchewer.com', 'marijuanapackaging.com',
+  'dragonchewer.com', 'marijuanapackaging.com', 'greentechpackaging.com',
   'smokea.com', 'dankgeek.com', 'everythingfor420.com', 'grasscity.com',
   'dailyhighclub.com', 'brotherswithglass.com', 'smokecartel.com',
   'headshop.com', 'thickassglass.com', 'gogopipes.com', 'kings-pipe.com',
@@ -39,7 +39,7 @@ function getGeminiKey(): string {
 
 const DEFAULT_MODEL = 'gemini-2.5-flash';
 const FAST_MODEL = 'gemini-2.0-flash';
-const SEARCH_MODEL = 'gemini-2.5-flash'; // Use flash for search — cheap + grounding support
+const SEARCH_MODEL = 'gemini-2.0-flash'; // 2.0-flash is more reliable for grounding
 
 // ---------------------------------------------------------------------------
 // Shared types — same interface as openai.ts / claude.ts
@@ -190,7 +190,7 @@ export async function geminiChatCompletion(options: ChatCompletionOptions): Prom
     generationConfig.temperature = options.temperature;
   }
 
-  // JSON mode — Gemini supports responseMimeType
+  // JSON mode — Gemini supports responseMimeType (only for non-tool calls)
   if (options.jsonMode) {
     generationConfig.responseMimeType = 'application/json';
   }
@@ -323,20 +323,123 @@ function extractPricesFromNarrative(text: string, productTitle: string): SearchP
 }
 
 /**
+ * Extract text and grounding data from a Gemini response that used google_search.
+ * Handles cases where text is empty but grounding metadata exists.
+ */
+function extractSearchResponse(data: Record<string, unknown>): { text: string; groundingUrls: { uri: string; title: string }[] } {
+  let text = '';
+  const groundingUrls: { uri: string; title: string }[] = [];
+
+  // Try to extract text from candidate content
+  const candidate = (data.candidates as Record<string, unknown>[])?.[0];
+  if (candidate) {
+    const content = candidate.content as Record<string, unknown> | undefined;
+    if (content?.parts && Array.isArray(content.parts)) {
+      for (const part of content.parts) {
+        if (part.text) {
+          text += part.text;
+        }
+      }
+    }
+
+    // Extract grounding metadata — contains URLs and titles from search results
+    const groundingMeta = candidate.groundingMetadata as Record<string, unknown> | undefined;
+    if (groundingMeta) {
+      // Extract grounding chunks (actual web pages found)
+      const chunks = groundingMeta.groundingChunks as Record<string, unknown>[] | undefined;
+      if (chunks) {
+        for (const chunk of chunks) {
+          const web = chunk.web as { uri?: string; title?: string } | undefined;
+          if (web?.uri) {
+            groundingUrls.push({ uri: web.uri, title: web.title || '' });
+          }
+        }
+      }
+
+      // If no text but we have search queries, log them
+      if (!text && groundingMeta.webSearchQueries) {
+        console.log(`[gemini] Search queries used: ${JSON.stringify(groundingMeta.webSearchQueries)}`);
+      }
+    }
+
+    // Log why response might be empty
+    if (!text) {
+      const finishReason = candidate.finishReason as string | undefined;
+      console.log(`[gemini] Empty text. finishReason=${finishReason}, groundingUrls=${groundingUrls.length}, candidate keys=${Object.keys(candidate).join(',')}`);
+    }
+  } else {
+    // No candidates at all — check for prompt feedback
+    const feedback = (data as Record<string, unknown>).promptFeedback as Record<string, unknown> | undefined;
+    if (feedback) {
+      console.log(`[gemini] No candidates. promptFeedback: ${JSON.stringify(feedback)}`);
+    }
+  }
+
+  return { text, groundingUrls };
+}
+
+/**
+ * Execute a Gemini search with google_search grounding and parse results.
+ * Handles empty text by falling back to grounding metadata.
+ */
+async function executeGeminiSearch(
+  searchPrompt: string,
+  productTitle: string,
+): Promise<string> {
+  const key = getGeminiKey();
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${SEARCH_MODEL}:generateContent?key=${key}`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: searchPrompt }] }],
+      tools: [{ google_search: {} }],
+      generationConfig: {
+        maxOutputTokens: 4000,
+      },
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
+    throw new Error(err.error?.message || `Gemini search error: ${res.status}`);
+  }
+
+  const data = await res.json();
+  const { text, groundingUrls } = extractSearchResponse(data);
+
+  // If we have text, use it directly
+  if (text) {
+    return text;
+  }
+
+  // Fallback: if text is empty but we have grounding URLs, build a minimal result
+  // from the URLs so the caller at least gets domain info for competitor matching
+  if (groundingUrls.length > 0) {
+    console.log(`[gemini] No text but found ${groundingUrls.length} grounding URLs, building minimal result`);
+    const urls = groundingUrls.map(u => `- ${u.title}: ${u.uri}`).join('\n');
+    return `Search found the following results but could not extract detailed pricing:\n${urls}\n\nNo specific prices could be extracted from these results.`;
+  }
+
+  throw new Error(`No text response from Gemini search (product: "${productTitle.substring(0, 60)}")`);
+}
+
+/**
  * Search for competitor prices using Gemini with Google Search grounding.
- * Uses the googleSearch tool for real-time web results.
+ * Uses the google_search tool for real-time web results.
  */
 export async function searchCompetitorsGemini(
   product: { title: string; vendor: string | null; productType: string | null },
   identity: ProductIdentity,
 ): Promise<CompetitorSearchResult> {
-  const key = getGeminiKey();
   const productName = identity.identifiedAs || product.title;
   const brand = product.vendor || identity.brand || '';
 
   const isOilSlick = (brand || '').toLowerCase().includes('oil slick');
 
-  const searchPrompt = `Search for retail prices of this smoke shop product and return competitor pricing data.
+  const searchPrompt = `Find retail prices for this product online. Search multiple stores and report back with specific prices.
 
 PRODUCT: ${product.title}
 IDENTIFIED AS: ${productName}
@@ -344,72 +447,23 @@ BRAND/VENDOR: ${brand || 'Unknown'}
 TYPE: ${identity.productType || product.productType || 'Unknown'}
 KEY FEATURES: ${(identity.keyFeatures || []).join(', ')}
 
-INSTRUCTIONS:
-1. **SEARCH THESE SITES FIRST** (primary price authorities — their prices carry the most weight):
-   - dragonchewer.com — search site:dragonchewer.com for "${productName}"
-   - marijuanapackaging.com — search site:marijuanapackaging.com for "${productName}"
-   ${isOilSlick ? '⚠️ This is an OIL SLICK product — dragonchewer.com and marijuanapackaging.com are the LARGEST direct competitors. Their prices MUST be included if they carry this or similar products.' : ''}
-2. Then search other online smoke shops and retail stores for additional data points
-3. Focus on finding actual retail sale prices (NOT wholesale, NOT bulk pricing)
-4. Also check: smokea.com, grasscity.com, dankgeek.com, everythingfor420.com, brotherswithglass.com, smokecartel.com
-5. Exclude wholesale sites (alibaba, dhgate, etc.)
-6. Include the URL, store name, product title, and price for each result
+Search these specific sites FIRST (primary price authorities):
+- dragonchewer.com "${productName}"
+- marijuanapackaging.com "${productName}"
+- greentechpackaging.com "${productName}"
+${isOilSlick ? '⚠️ This is an OIL SLICK product — dragonchewer.com, marijuanapackaging.com, and greentechpackaging.com are the LARGEST direct competitors. Their prices MUST be included if they carry this or similar products.' : ''}
 
-Return JSON (no markdown, just raw JSON):
-{
-  "competitors": [
-    {
-      "source": "domain.com",
-      "url": "full URL",
-      "title": "product listing title",
-      "price": 12.99,
-      "isKnownRetailer": true
-    }
-  ],
-  "searchSummary": "brief summary of what was found"
-}
+Then search other smoke shop retailers: smokea.com, grasscity.com, dankgeek.com, everythingfor420.com
+Exclude wholesale sites (alibaba, dhgate).
 
-Return at least 2-5 competitor prices if available. Only include prices between $1 and $2000.`;
+IMPORTANT: Report the actual retail sale prices you find. Include the store domain, product URL, listing title, and exact price for each result.
+
+Format your response as JSON:
+{"competitors":[{"source":"domain.com","url":"full URL","title":"listing title","price":12.99,"isKnownRetailer":true}],"searchSummary":"summary"}`;
 
   try {
     const result = await geminiRateLimiter.execute(async () => {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${SEARCH_MODEL}:generateContent?key=${key}`;
-
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: searchPrompt }] }],
-          // google_search tool for grounding — NOTE: responseMimeType CANNOT be
-          // used with tools (Gemini returns 400), so we rely on the prompt for JSON.
-          tools: [{ google_search: {} }],
-          generationConfig: {
-            maxOutputTokens: 4000,
-          },
-        }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
-        throw new Error(err.error?.message || `Gemini search error: ${res.status}`);
-      }
-
-      const data = await res.json();
-
-      let textContent = '';
-      if (data.candidates?.[0]?.content?.parts) {
-        for (const part of data.candidates[0].content.parts) {
-          if (part.text) {
-            textContent += part.text;
-          }
-        }
-      }
-
-      if (!textContent) {
-        throw new Error('No text response from Gemini web search');
-      }
-
-      return textContent;
+      return executeGeminiSearch(searchPrompt, product.title);
     }, 3);
 
     let parsed: SearchPriceResult;
@@ -458,19 +512,18 @@ Return at least 2-5 competitor prices if available. Only include prices between 
 }
 
 /**
- * Search for competitor prices on Amazon ONLY using Gemini with Google Search grounding.
+ * Search for competitor prices on key competitor sites + Amazon using Gemini.
  */
 export async function searchCompetitorsGeminiAmazon(
   product: { title: string; vendor: string | null; productType: string | null },
   identity: ProductIdentity,
 ): Promise<CompetitorSearchResult> {
-  const key = getGeminiKey();
   const productName = identity.identifiedAs || product.title;
   const brand = product.vendor || identity.brand || '';
 
   const isOilSlick = (brand || '').toLowerCase().includes('oil slick');
 
-  const searchPrompt = `Search for this product on Amazon AND key competitor sites, and return pricing data.
+  const searchPrompt = `Find retail prices for this product. Search the following stores and report specific prices.
 
 PRODUCT: ${product.title}
 IDENTIFIED AS: ${productName}
@@ -478,70 +531,22 @@ BRAND/VENDOR: ${brand || 'Unknown'}
 TYPE: ${identity.productType || product.productType || 'Unknown'}
 KEY FEATURES: ${(identity.keyFeatures || []).join(', ')}
 
-INSTRUCTIONS:
-1. **SEARCH THESE SITES FIRST** (primary price authorities):
-   - dragonchewer.com — search site:dragonchewer.com for "${productName}"
-   - marijuanapackaging.com — search site:marijuanapackaging.com for "${productName}"
-   ${isOilSlick ? '⚠️ This is an OIL SLICK product — dragonchewer.com and marijuanapackaging.com are the LARGEST direct competitors. Their prices MUST be included.' : ''}
-2. Then search amazon.com for this product or very similar products
-3. Find actual retail/sale prices (NOT wholesale, NOT bulk pricing)
-4. Include the URL, store name, listing title, and price for each result
-5. If no exact match, include similar products in the same category
+Search these specific sites FIRST (primary price authorities):
+- dragonchewer.com "${productName}"
+- marijuanapackaging.com "${productName}"
+- greentechpackaging.com "${productName}"
+${isOilSlick ? '⚠️ This is an OIL SLICK product — these are the LARGEST direct competitors. Their prices MUST be included.' : ''}
 
-Return JSON (no markdown, just raw JSON):
-{
-  "competitors": [
-    {
-      "source": "domain.com",
-      "url": "full URL",
-      "title": "listing title",
-      "price": 12.99,
-      "isKnownRetailer": true
-    }
-  ],
-  "searchSummary": "brief summary of what was found"
-}
+Then also search amazon.com for this product or similar products.
 
-Return up to 8 listings if available. Only include prices between $1 and $2000.`;
+IMPORTANT: Report the actual retail sale prices you find. For EACH result include the store domain, full product URL, listing title, and exact price. Make sure to match the SAME pack size / quantity as the product above.
+
+Format your response as JSON:
+{"competitors":[{"source":"domain.com","url":"full URL","title":"listing title","price":12.99,"isKnownRetailer":true}],"searchSummary":"summary"}`;
 
   try {
     const result = await geminiRateLimiter.execute(async () => {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${SEARCH_MODEL}:generateContent?key=${key}`;
-
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: searchPrompt }] }],
-          // google_search tool — cannot combine with responseMimeType
-          tools: [{ google_search: {} }],
-          generationConfig: {
-            maxOutputTokens: 4000,
-          },
-        }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
-        throw new Error(err.error?.message || `Gemini search error: ${res.status}`);
-      }
-
-      const data = await res.json();
-
-      let textContent = '';
-      if (data.candidates?.[0]?.content?.parts) {
-        for (const part of data.candidates[0].content.parts) {
-          if (part.text) {
-            textContent += part.text;
-          }
-        }
-      }
-
-      if (!textContent) {
-        throw new Error('No text response from Gemini Amazon search');
-      }
-
-      return textContent;
+      return executeGeminiSearch(searchPrompt, product.title);
     }, 3);
 
     let parsed: SearchPriceResult;
@@ -554,12 +559,12 @@ Return up to 8 listings if available. Only include prices between $1 and $2000.`
     const competitors: CompetitorPrice[] = (parsed.competitors || [])
       .filter(c => c.price >= 1 && c.price <= 2000)
       .map(c => ({
-        source: c.source?.includes('amazon') ? 'amazon.com' : (c.source || 'amazon.com'),
-        url: c.url || `https://amazon.com/s?k=${encodeURIComponent(product.title)}`,
+        source: c.source?.replace(/^www\./, '') || 'unknown',
+        url: c.url || `https://${c.source || 'unknown.com'}`,
         title: c.title || product.title,
         price: c.price,
         extractionMethod: 'gemini-amazon-search',
-        isKnownRetailer: true,
+        isKnownRetailer: RETAIL_SMOKE_SHOPS.some(shop => (c.source || '').includes(shop)) || (c.source || '').includes('amazon'),
         inStock: true,
       }));
 
