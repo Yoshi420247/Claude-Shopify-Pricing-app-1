@@ -124,3 +124,11 @@ export const claudeRateLimiter = new ConcurrentRateLimiter('claude', {
   maxConcurrent: 15,
   maxPerMinute: 40,
 });
+
+// Gemini (Google): generous rate limits on paid tier
+// Free tier: 15 RPM, 1M TPM. Paid tier: 2000 RPM, 4M TPM.
+// Conservative defaults — adjust up if on paid tier.
+export const geminiRateLimiter = new ConcurrentRateLimiter('gemini', {
+  maxConcurrent: 30,
+  maxPerMinute: 100,
+});

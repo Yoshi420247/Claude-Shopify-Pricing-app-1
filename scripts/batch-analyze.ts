@@ -97,7 +97,7 @@ function parseArgs(): {
   }
 
   const rawProvider = get('--provider') || 'openai';
-  const provider: Provider = rawProvider === 'claude' ? 'claude' : 'openai';
+  const provider: Provider = rawProvider === 'claude' ? 'claude' : rawProvider === 'gemini' ? 'gemini' : 'openai';
 
   // Parse --product-id: accepts numeric IDs, Shopify admin URLs, or handles (comma-separated)
   const rawProductId = get('--product-id');
@@ -551,6 +551,8 @@ async function main() {
   if (!opts.markup) {
     if (opts.provider === 'claude') {
       requiredEnv.push('ANTHROPIC_API_KEY');
+    } else if (opts.provider === 'gemini') {
+      requiredEnv.push('GOOGLE_API_KEY');
     } else {
       requiredEnv.push('OPENAI_API_KEY');
     }
