@@ -380,10 +380,11 @@ Return at least 2-5 competitor prices if available. Only include prices between 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ role: 'user', parts: [{ text: searchPrompt }] }],
-          tools: [{ googleSearch: {} }],
+          // google_search tool for grounding — NOTE: responseMimeType CANNOT be
+          // used with tools (Gemini returns 400), so we rely on the prompt for JSON.
+          tools: [{ google_search: {} }],
           generationConfig: {
             maxOutputTokens: 4000,
-            responseMimeType: 'application/json',
           },
         }),
       });
@@ -415,6 +416,7 @@ Return at least 2-5 competitor prices if available. Only include prices between 
     try {
       parsed = parseAIJson<SearchPriceResult>(result);
     } catch {
+      // Fallback: extract prices from narrative text using regex
       parsed = extractPricesFromNarrative(result, product.title);
     }
 
@@ -511,10 +513,10 @@ Return up to 8 listings if available. Only include prices between $1 and $2000.`
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ role: 'user', parts: [{ text: searchPrompt }] }],
-          tools: [{ googleSearch: {} }],
+          // google_search tool — cannot combine with responseMimeType
+          tools: [{ google_search: {} }],
           generationConfig: {
             maxOutputTokens: 4000,
-            responseMimeType: 'application/json',
           },
         }),
       });
@@ -552,8 +554,8 @@ Return up to 8 listings if available. Only include prices between $1 and $2000.`
     const competitors: CompetitorPrice[] = (parsed.competitors || [])
       .filter(c => c.price >= 1 && c.price <= 2000)
       .map(c => ({
-        source: 'amazon.com',
-        url: c.url && c.url.includes('amazon') ? c.url : `https://amazon.com/s?k=${encodeURIComponent(product.title)}`,
+        source: c.source?.includes('amazon') ? 'amazon.com' : (c.source || 'amazon.com'),
+        url: c.url || `https://amazon.com/s?k=${encodeURIComponent(product.title)}`,
         title: c.title || product.title,
         price: c.price,
         extractionMethod: 'gemini-amazon-search',
