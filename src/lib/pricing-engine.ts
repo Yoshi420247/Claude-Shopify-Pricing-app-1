@@ -784,7 +784,11 @@ export async function runFullAnalysis(
 export async function saveAnalysis(
   productId: string,
   variantId: string,
-  result: Awaited<ReturnType<typeof runFullAnalysis>>
+  result: Awaited<ReturnType<typeof runFullAnalysis>>,
+  volumeMeta?: {
+    pricing_method: 'ai' | 'volume_formula';
+    volume_pricing: import('@/types').VolumePricingMeta | null;
+  },
 ) {
   const db = createServerClient();
 
@@ -810,6 +814,8 @@ export async function saveAnalysis(
     applied: false,
     error: result.error,
     analyzed_at: new Date().toISOString(),
+    pricing_method: volumeMeta?.pricing_method || 'ai',
+    volume_pricing: volumeMeta?.volume_pricing || null,
   });
 
   if (error) {
@@ -817,3 +823,236 @@ export async function saveAnalysis(
     throw new Error(`Database error: ${error.message}`);
   }
 }
+
+// ============================================================================
+// Volume-Aware Analysis — only AI-analyze the base (lowest qty) variant,
+// then derive all other quantity variants using the power-law formula.
+// ============================================================================
+
+import {
+  detectQuantityVariantGroups,
+  calculateVolumePrices,
+  buildVolumeAnalysisReasoning,
+  DEFAULT_CONFIG,
+  type VolumePricingConfig,
+  type QuantityVariantGroup,
+  type VolumePriceResult,
+  type VolumePricingOutput,
+} from './volume-pricing';
+import type { VolumePricingMeta } from '@/types';
+
+export type { QuantityVariantGroup } from './volume-pricing';
+
+/**
+ * Run full analysis for a product, volume-aware.
+ *
+ * If the product has quantity-type variants:
+ *   1. Only the lowest-quantity variant is analyzed through the AI pipeline.
+ *   2. All other quantity variants get their price derived via the power-law
+ *      volume discount formula.
+ *
+ * Returns results for ALL variants (base + derived).
+ *
+ * If the product does NOT have quantity variants, runs normal AI analysis for
+ * the single requested variant and returns just that one result.
+ */
+export async function runVolumeAwareAnalysis(
+  product: Product,
+  allVariants: Variant[],
+  targetVariantId: string,
+  settings: Settings,
+  options: {
+    onProgress?: (step: string) => void;
+    searchMode?: SearchMode;
+    provider?: Provider;
+    fast?: boolean;
+    volumeConfig?: Partial<VolumePricingConfig>;
+  } = {},
+): Promise<{
+  results: Array<{
+    variantId: string;
+    productId: string;
+    analysisResult: Awaited<ReturnType<typeof runFullAnalysis>>;
+    volumeMeta: { pricing_method: 'ai' | 'volume_formula'; volume_pricing: VolumePricingMeta | null };
+  }>;
+  quantityGroups: QuantityVariantGroup[] | null;
+}> {
+  const {
+    onProgress,
+    searchMode = 'brave',
+    provider = 'openai',
+    fast = false,
+    volumeConfig = {},
+  } = options;
+
+  // Step 1: Detect quantity variant groups
+  const groups = detectQuantityVariantGroups(allVariants);
+
+  if (!groups) {
+    // Not a quantity-based product — run normal AI analysis on the target variant
+    const variant = allVariants.find(v => v.id === targetVariantId);
+    if (!variant) {
+      throw new Error(`Target variant ${targetVariantId} not found in product variants`);
+    }
+
+    const result = await runFullAnalysis(product, variant, settings, onProgress, searchMode, provider, fast);
+    return {
+      results: [{
+        variantId: variant.id,
+        productId: product.id,
+        analysisResult: result,
+        volumeMeta: { pricing_method: 'ai', volume_pricing: null },
+      }],
+      quantityGroups: null,
+    };
+  }
+
+  // Step 2: Find which group contains the target variant
+  let targetGroup: QuantityVariantGroup | null = null;
+  for (const g of groups) {
+    if (g.variants.some(qv => qv.variant.id === targetVariantId)) {
+      targetGroup = g;
+      break;
+    }
+  }
+
+  if (!targetGroup) {
+    // Target variant is not part of any quantity group (e.g. it's a standalone variant)
+    const variant = allVariants.find(v => v.id === targetVariantId);
+    if (!variant) {
+      throw new Error(`Target variant ${targetVariantId} not found`);
+    }
+    const result = await runFullAnalysis(product, variant, settings, onProgress, searchMode, provider, fast);
+    return {
+      results: [{
+        variantId: variant.id,
+        productId: product.id,
+        analysisResult: result,
+        volumeMeta: { pricing_method: 'ai', volume_pricing: null },
+      }],
+      quantityGroups: groups,
+    };
+  }
+
+  // Step 3: AI-analyze only the base (lowest qty) variant
+  const baseVariant = targetGroup.baseVariant.variant;
+  const baseQty = targetGroup.baseVariant.quantity;
+
+  onProgress?.(`Quantity variants detected (${targetGroup.variants.map(v => v.quantity).join(', ')}). AI-analyzing base tier (qty ${baseQty})...`);
+
+  const baseResult = await runFullAnalysis(product, baseVariant, settings, onProgress, searchMode, provider, fast);
+
+  if (baseResult.error || !baseResult.suggestedPrice) {
+    // Base analysis failed — can't derive other tiers. Return only base result.
+    return {
+      results: [{
+        variantId: baseVariant.id,
+        productId: product.id,
+        analysisResult: baseResult,
+        volumeMeta: { pricing_method: 'ai', volume_pricing: null },
+      }],
+      quantityGroups: groups,
+    };
+  }
+
+  // Step 4: Calculate volume prices for all tiers in this group
+  const tiers = targetGroup.variants.map(qv => ({
+    variantId: qv.variant.id,
+    quantity: qv.quantity,
+  }));
+
+  const cfg: Partial<VolumePricingConfig> = { ...volumeConfig };
+  const volumeOutput = calculateVolumePrices(baseResult.suggestedPrice, baseQty, tiers, cfg);
+
+  if (volumeOutput.warnings.length > 0) {
+    onProgress?.(`Volume pricing warnings: ${volumeOutput.warnings.join('; ')}`);
+  }
+
+  // Step 5: Build analysis results for all variants
+  const allResults: Array<{
+    variantId: string;
+    productId: string;
+    analysisResult: Awaited<ReturnType<typeof runFullAnalysis>>;
+    volumeMeta: { pricing_method: 'ai' | 'volume_formula'; volume_pricing: VolumePricingMeta | null };
+  }> = [];
+
+  for (const priceResult of volumeOutput.results) {
+    if (priceResult.isBase) {
+      // Base variant — uses AI analysis result directly
+      allResults.push({
+        variantId: priceResult.variantId,
+        productId: product.id,
+        analysisResult: baseResult,
+        volumeMeta: {
+          pricing_method: 'ai',
+          volume_pricing: {
+            base_variant_id: baseVariant.id,
+            base_price: baseResult.suggestedPrice,
+            base_qty: baseQty,
+            variant_qty: baseQty,
+            exponent: volumeOutput.exponent,
+            rounding_method: volumeOutput.roundingMethod,
+            raw_price: baseResult.suggestedPrice,
+            per_unit: priceResult.perUnit,
+            discount_from_base_percent: 0,
+            premium_multiplier: null,
+          },
+        },
+      });
+    } else {
+      // Derived variant — price calculated via formula
+      const reasoning = buildVolumeAnalysisReasoning(priceResult, volumeOutput);
+
+      const derivedResult: Awaited<ReturnType<typeof runFullAnalysis>> = {
+        suggestedPrice: priceResult.calculatedPrice,
+        confidence: baseResult.confidence, // Inherits base confidence
+        confidenceReason: `Derived from base variant (qty ${baseQty}) at $${baseResult.suggestedPrice.toFixed(2)} using power-law volume discount (exponent ${volumeOutput.exponent}).`,
+        summary: `Volume discount price: $${priceResult.calculatedPrice.toFixed(2)} for ${priceResult.quantity} units ($${priceResult.perUnit.toFixed(4)}/unit, ${priceResult.discountFromBasePercent}% discount from base).`,
+        reasoning,
+        marketPosition: baseResult.marketPosition,
+        priceFloor: null,
+        priceCeiling: null,
+        productIdentity: baseResult.productIdentity,
+        competitorAnalysis: null, // No separate competitor data for derived variants
+        searchQueries: [],
+        wasDeliberated: false,
+        wasReflectionRetried: false,
+        error: null,
+      };
+
+      onProgress?.(`Derived qty ${priceResult.quantity}: $${priceResult.calculatedPrice.toFixed(2)} (${priceResult.discountFromBasePercent}% discount)`);
+
+      allResults.push({
+        variantId: priceResult.variantId,
+        productId: product.id,
+        analysisResult: derivedResult,
+        volumeMeta: {
+          pricing_method: 'volume_formula',
+          volume_pricing: {
+            base_variant_id: baseVariant.id,
+            base_price: baseResult.suggestedPrice,
+            base_qty: baseQty,
+            variant_qty: priceResult.quantity,
+            exponent: volumeOutput.exponent,
+            rounding_method: volumeOutput.roundingMethod,
+            raw_price: priceResult.rawPrice,
+            per_unit: priceResult.perUnit,
+            discount_from_base_percent: priceResult.discountFromBasePercent,
+            premium_multiplier: null,
+          },
+        },
+      });
+    }
+  }
+
+  return {
+    results: allResults,
+    quantityGroups: groups,
+  };
+}
+
+/**
+ * Check if a set of variants contains quantity-type variants.
+ * Utility for callers that need to pre-check before deciding on analysis strategy.
+ */
+export { detectQuantityVariantGroups } from './volume-pricing';

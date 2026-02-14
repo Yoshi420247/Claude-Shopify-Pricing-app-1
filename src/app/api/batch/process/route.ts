@@ -3,10 +3,14 @@
 // Each call: analyze a few variants concurrently, save results, optionally auto-apply
 // All progress is persisted to DB so it survives page refreshes
 // Rate limiting is handled by the individual API clients (openai, brave, shopify)
+//
+// VOLUME PRICING: For products with quantity-type variants, only the base
+// (lowest qty) variant is AI-analyzed. All other quantity variants get their
+// prices derived via the power-law volume discount formula.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
-import { runFullAnalysis, saveAnalysis } from '@/lib/pricing-engine';
+import { runVolumeAwareAnalysis, saveAnalysis } from '@/lib/pricing-engine';
 import { updateVariantPrice } from '@/lib/shopify';
 import type { Product, Variant, Settings } from '@/types';
 
@@ -42,85 +46,112 @@ interface ChunkResult {
   variantId: string;
   status: 'completed' | 'failed' | 'applied';
   suggestedPrice?: number;
+  pricingMethod?: 'ai' | 'volume_formula';
   error?: string;
 }
 
-// Process a single variant (analysis + optional auto-apply)
-async function processOneVariant(
+// Process a single variant using volume-aware analysis.
+// This may return results for multiple variants if quantity groups are detected.
+async function processOneVariantVolumeAware(
   ref: VariantRef,
   productMap: Map<string, Product>,
-  variantMap: Map<string, Variant>,
+  allVariantsByProduct: Map<string, Variant[]>,
   settings: Settings,
   autoApply: boolean,
   db: ReturnType<typeof createServerClient>,
-): Promise<{ result: ChunkResult; completed: boolean; applied: boolean }> {
+  alreadyProcessedIds: Set<string>,
+): Promise<{ results: ChunkResult[]; completedCount: number; appliedCount: number; failedCount: number }> {
   const product = productMap.get(ref.productId);
-  const variant = variantMap.get(ref.variantId);
+  const productVariants = allVariantsByProduct.get(ref.productId);
 
-  if (!product || !variant) {
+  if (!product || !productVariants) {
     return {
-      result: { variantId: ref.variantId, status: 'failed', error: 'Product or variant not found' },
-      completed: false,
-      applied: false,
+      results: [{ variantId: ref.variantId, status: 'failed', error: 'Product or variant not found' }],
+      completedCount: 0,
+      appliedCount: 0,
+      failedCount: 1,
     };
   }
 
   try {
-    const analysisResult = await runFullAnalysis(product, variant, settings);
+    // Run volume-aware analysis — will AI-analyze base qty variant only
+    // and derive all other quantity variants formulaically
+    const { results: analysisResults } = await runVolumeAwareAnalysis(
+      product,
+      productVariants,
+      ref.variantId,
+      settings,
+    );
 
-    if (analysisResult.error) {
-      return {
-        result: { variantId: ref.variantId, status: 'failed', error: analysisResult.error },
-        completed: false,
-        applied: false,
-      };
-    }
+    const chunkResults: ChunkResult[] = [];
+    let completedCount = 0;
+    let appliedCount = 0;
+    let failedCount = 0;
 
-    // Save analysis to DB
-    await saveAnalysis(product.id, variant.id, analysisResult);
+    for (const r of analysisResults) {
+      // Skip variants that were already processed in a previous chunk
+      if (alreadyProcessedIds.has(r.variantId)) continue;
+      alreadyProcessedIds.add(r.variantId);
 
-    // Auto-apply if enabled and we have a suggested price
-    if (autoApply && analysisResult.suggestedPrice && analysisResult.suggestedPrice > 0) {
-      try {
-        const previousPrice = variant.price;
-        await updateVariantPrice(variant.id, analysisResult.suggestedPrice);
-        await db.from('variants').update({ price: analysisResult.suggestedPrice }).eq('id', variant.id);
-        await db
-          .from('analyses')
-          .update({ applied: true, applied_at: new Date().toISOString(), previous_price: previousPrice })
-          .match({ product_id: product.id, variant_id: variant.id });
+      if (r.analysisResult.error) {
+        chunkResults.push({ variantId: r.variantId, status: 'failed', error: r.analysisResult.error });
+        failedCount++;
+        continue;
+      }
 
-        return {
-          result: { variantId: ref.variantId, status: 'applied', suggestedPrice: analysisResult.suggestedPrice },
-          completed: true,
-          applied: true,
-        };
-      } catch (applyErr) {
-        const applyMsg = applyErr instanceof Error ? applyErr.message : 'Apply failed';
-        return {
-          result: {
-            variantId: ref.variantId,
+      // Save analysis to DB
+      await saveAnalysis(r.productId, r.variantId, r.analysisResult, r.volumeMeta);
+
+      // Auto-apply if enabled and we have a suggested price
+      if (autoApply && r.analysisResult.suggestedPrice && r.analysisResult.suggestedPrice > 0) {
+        const variant = productVariants.find(v => v.id === r.variantId);
+        try {
+          const previousPrice = variant?.price || 0;
+          await updateVariantPrice(r.variantId, r.analysisResult.suggestedPrice);
+          await db.from('variants').update({ price: r.analysisResult.suggestedPrice }).eq('id', r.variantId);
+          await db
+            .from('analyses')
+            .update({ applied: true, applied_at: new Date().toISOString(), previous_price: previousPrice })
+            .match({ product_id: r.productId, variant_id: r.variantId });
+
+          chunkResults.push({
+            variantId: r.variantId,
+            status: 'applied',
+            suggestedPrice: r.analysisResult.suggestedPrice,
+            pricingMethod: r.volumeMeta.pricing_method,
+          });
+          completedCount++;
+          appliedCount++;
+        } catch (applyErr) {
+          const applyMsg = applyErr instanceof Error ? applyErr.message : 'Apply failed';
+          chunkResults.push({
+            variantId: r.variantId,
             status: 'completed',
-            suggestedPrice: analysisResult.suggestedPrice || undefined,
+            suggestedPrice: r.analysisResult.suggestedPrice || undefined,
+            pricingMethod: r.volumeMeta.pricing_method,
             error: `Analysis OK, apply failed: ${applyMsg}`,
-          },
-          completed: true,
-          applied: false,
-        };
+          });
+          completedCount++;
+        }
+      } else {
+        chunkResults.push({
+          variantId: r.variantId,
+          status: 'completed',
+          suggestedPrice: r.analysisResult.suggestedPrice || undefined,
+          pricingMethod: r.volumeMeta.pricing_method,
+        });
+        completedCount++;
       }
     }
 
-    return {
-      result: { variantId: ref.variantId, status: 'completed', suggestedPrice: analysisResult.suggestedPrice || undefined },
-      completed: true,
-      applied: false,
-    };
+    return { results: chunkResults, completedCount, appliedCount, failedCount };
   } catch (e) {
     const errorMsg = e instanceof Error ? e.message : 'Unknown error';
     return {
-      result: { variantId: ref.variantId, status: 'failed', error: errorMsg },
-      completed: false,
-      applied: false,
+      results: [{ variantId: ref.variantId, status: 'failed', error: errorMsg }],
+      completedCount: 0,
+      appliedCount: 0,
+      failedCount: 1,
     };
   }
 }
@@ -208,14 +239,14 @@ export async function POST(req: NextRequest) {
     }
 
     // Calculate which variants to process in this call
-    const allVariants: VariantRef[] = batch.variant_ids || [];
+    const allVariantRefs: VariantRef[] = batch.variant_ids || [];
     const processed = (batch.completed || 0) + (batch.failed || 0);
 
     // CRITICAL: Only take a small number of items per API call to stay within 300s timeout.
     // The client loops calling this endpoint, so small batches are fine.
     const concurrency = Math.min(Math.max(settings.concurrency || 3, 1), 10);
     const itemsThisCall = Math.min(MAX_PER_CALL, concurrency * 2);
-    const chunk = allVariants.slice(processed, processed + itemsThisCall);
+    const chunk = allVariantRefs.slice(processed, processed + itemsThisCall);
 
     if (chunk.length === 0) {
       // All done
@@ -239,35 +270,48 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Load products and variants needed for this small batch
+    // Load products and ALL their variants (needed for quantity group detection).
+    // We load all variants for each product in the chunk, not just the chunk variants.
     const productIds = [...new Set(chunk.map(v => v.productId))];
-    const variantIds = chunk.map(v => v.variantId);
 
-    const [{ data: products }, { data: variants }] = await Promise.all([
+    const [{ data: products }, { data: productVariants }] = await Promise.all([
       db.from('products').select('*').in('id', productIds),
-      db.from('variants').select('*').in('id', variantIds),
+      db.from('variants').select('*').in('product_id', productIds),
     ]);
 
-    const productMap = new Map((products || []).map(p => [p.id, p as Product]));
-    const variantMap = new Map((variants || []).map(v => [v.id, v as Variant]));
+    const productMap = new Map<string, Product>((products || []).map((p: Record<string, unknown>) => [p.id as string, p as unknown as Product]));
+    const allVariantsByProduct = new Map<string, Variant[]>();
+    for (const v of (productVariants || []) as Variant[]) {
+      const existing = allVariantsByProduct.get(v.product_id) || [];
+      existing.push(v);
+      allVariantsByProduct.set(v.product_id, existing);
+    }
 
     let chunkCompleted = 0;
     let chunkFailed = 0;
     let chunkApplied = 0;
     const chunkResults: ChunkResult[] = [];
     let fatalError: string | null = null;
+    const alreadyProcessedIds = new Set<string>();
 
     // Build tasks for concurrent execution
     const tasks = chunk.map((ref) => async () => {
       // If a fatal error was detected (e.g. OpenAI quota), skip remaining
       if (fatalError) {
         return {
-          result: { variantId: ref.variantId, status: 'failed' as const, error: `Skipped: ${fatalError}` },
-          completed: false,
-          applied: false,
+          results: [{ variantId: ref.variantId, status: 'failed' as const, error: `Skipped: ${fatalError}` }],
+          completedCount: 0,
+          appliedCount: 0,
+          failedCount: 1,
         };
       }
-      return processOneVariant(ref, productMap, variantMap, settings, batch.auto_apply, db);
+
+      // Skip if already processed (e.g., as a derived quantity variant from a previous item in this chunk)
+      if (alreadyProcessedIds.has(ref.variantId)) {
+        return { results: [], completedCount: 0, appliedCount: 0, failedCount: 0 };
+      }
+
+      return processOneVariantVolumeAware(ref, productMap, allVariantsByProduct, settings, batch.auto_apply, db, alreadyProcessedIds);
     });
 
     // Process with concurrency limit
@@ -276,23 +320,20 @@ export async function POST(req: NextRequest) {
     // Collect results and check for fatal errors
     for (const outcome of outcomes) {
       if (!outcome) continue;
-      const { result, completed, applied } = outcome;
-      chunkResults.push(result);
+      const { results, completedCount, appliedCount, failedCount } = outcome;
 
-      if (result.status === 'failed' && result.error && !result.error.startsWith('Skipped:')) {
-        chunkFailed++;
-        // Check if this is a fatal error that should stop the batch
-        if (isFatalError(result.error)) {
-          fatalError = result.error;
+      for (const result of results) {
+        chunkResults.push(result);
+        if (result.status === 'failed' && result.error && !result.error.startsWith('Skipped:')) {
+          if (isFatalError(result.error)) {
+            fatalError = result.error;
+          }
         }
-      } else if (result.error?.startsWith('Skipped:')) {
-        chunkFailed++;
-      } else if (completed) {
-        chunkCompleted++;
       }
-      if (applied) {
-        chunkApplied++;
-      }
+
+      chunkCompleted += completedCount;
+      chunkFailed += failedCount;
+      chunkApplied += appliedCount;
     }
 
     // Update batch progress in DB
