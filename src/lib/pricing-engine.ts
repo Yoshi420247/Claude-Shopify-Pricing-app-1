@@ -177,7 +177,7 @@ export async function analyzePricing(
   );
 
   // Primary price authority domains — their prices are the ultimate benchmark
-  const PRIMARY_AUTHORITIES = ['dragonchewer.com', 'marijuanapackaging.com'];
+  const PRIMARY_AUTHORITIES = ['dragonchewer.com', 'marijuanapackaging.com', 'greentechpackaging.com'];
 
   // Build competitor sections
   let competitorSection = '';

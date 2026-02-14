@@ -9,12 +9,12 @@ import type { CompetitorPrice, CompetitorSearchResult } from './competitors';
 
 // PRIMARY price authority sites — search these FIRST, weight their prices highest
 const PRIMARY_PRICE_AUTHORITIES = [
-  'dragonchewer.com', 'marijuanapackaging.com',
+  'dragonchewer.com', 'marijuanapackaging.com', 'greentechpackaging.com',
 ];
 
 // Known retail smoke shop domains — prioritized during search
 const RETAIL_SMOKE_SHOPS = [
-  'dragonchewer.com', 'marijuanapackaging.com',
+  'dragonchewer.com', 'marijuanapackaging.com', 'greentechpackaging.com',
   'smokea.com', 'dankgeek.com', 'everythingfor420.com', 'grasscity.com',
   'dailyhighclub.com', 'brotherswithglass.com', 'smokecartel.com',
   'headshop.com', 'thickassglass.com', 'gogopipes.com', 'kings-pipe.com',
@@ -70,7 +70,8 @@ INSTRUCTIONS:
 1. **SEARCH THESE SITES FIRST** (primary price authorities — their prices carry the most weight):
    - dragonchewer.com — search site:dragonchewer.com for "${productName}"
    - marijuanapackaging.com — search site:marijuanapackaging.com for "${productName}"
-   ${isOilSlick ? '⚠️ This is an OIL SLICK product — dragonchewer.com and marijuanapackaging.com are the LARGEST direct competitors. Their prices MUST be included if they carry this or similar products.' : ''}
+   - greentechpackaging.com — search site:greentechpackaging.com for "${productName}"
+   ${isOilSlick ? '⚠️ This is an OIL SLICK product — dragonchewer.com, marijuanapackaging.com, and greentechpackaging.com are the LARGEST direct competitors. Their prices MUST be included if they carry this or similar products.' : ''}
 2. Then search other online smoke shops and retail stores for additional data points
 3. Focus on finding actual retail sale prices (NOT wholesale, NOT bulk pricing)
 4. Also check: smokea.com, grasscity.com, dankgeek.com, everythingfor420.com, brotherswithglass.com, smokecartel.com
@@ -221,7 +222,8 @@ INSTRUCTIONS:
 1. **SEARCH THESE SITES FIRST** (primary price authorities):
    - dragonchewer.com — search site:dragonchewer.com for "${productName}"
    - marijuanapackaging.com — search site:marijuanapackaging.com for "${productName}"
-   ${isOilSlick ? '⚠️ This is an OIL SLICK product — dragonchewer.com and marijuanapackaging.com are the LARGEST direct competitors. Their prices MUST be included.' : ''}
+   - greentechpackaging.com — search site:greentechpackaging.com for "${productName}"
+   ${isOilSlick ? '⚠️ This is an OIL SLICK product — dragonchewer.com, marijuanapackaging.com, and greentechpackaging.com are the LARGEST direct competitors. Their prices MUST be included.' : ''}
 2. Then search amazon.com for this product or very similar products
 3. Find actual retail/sale prices (NOT wholesale, NOT bulk pricing)
 4. Include the URL, store name, listing title, and price for each result
