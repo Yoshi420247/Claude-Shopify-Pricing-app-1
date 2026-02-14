@@ -795,7 +795,7 @@ export async function saveAnalysis(
   // Delete any existing analysis for this variant
   await db.from('analyses').delete().match({ product_id: productId, variant_id: variantId });
 
-  const { error } = await db.from('analyses').insert({
+  const baseRow = {
     product_id: productId,
     variant_id: variantId,
     suggested_price: result.suggestedPrice,
@@ -814,11 +814,29 @@ export async function saveAnalysis(
     applied: false,
     error: result.error,
     analyzed_at: new Date().toISOString(),
+  };
+
+  // Try inserting with volume pricing columns first
+  const { error } = await db.from('analyses').insert({
+    ...baseRow,
     pricing_method: volumeMeta?.pricing_method || 'ai',
     volume_pricing: volumeMeta?.volume_pricing || null,
   });
 
   if (error) {
+    // If the volume pricing columns don't exist yet (migration 006 not applied),
+    // fall back to inserting without them
+    if (error.code === 'PGRST204' && error.message.includes('pricing_method')) {
+      console.warn(
+        'WARNING: Volume pricing columns missing — please apply migration 006_add_volume_pricing.sql to your Supabase database. Saving analysis without volume pricing metadata.',
+      );
+      const { error: fallbackError } = await db.from('analyses').insert(baseRow);
+      if (fallbackError) {
+        console.error('Failed to save analysis:', fallbackError);
+        throw new Error(`Database error: ${fallbackError.message}`);
+      }
+      return;
+    }
     console.error('Failed to save analysis:', error);
     throw new Error(`Database error: ${error.message}`);
   }

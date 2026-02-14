@@ -587,6 +587,17 @@ async function main() {
   settings.ai_unrestricted = true;
   log('AI Unrestricted Mode: ENABLED');
 
+  // Pre-flight check: verify volume pricing columns exist (migration 006)
+  const { error: schemaCheck } = await db
+    .from('analyses')
+    .select('pricing_method')
+    .limit(0);
+  if (schemaCheck?.code === 'PGRST204') {
+    log('WARNING: Volume pricing columns (pricing_method, volume_pricing) not found.');
+    log('WARNING: Please apply migration 006_add_volume_pricing.sql to your Supabase database.');
+    log('WARNING: Analysis will still be saved, but without volume pricing metadata.');
+  }
+
   // ---------------------------------------------------------------------------
   // Determine which variants to process
   // ---------------------------------------------------------------------------
