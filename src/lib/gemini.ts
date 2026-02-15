@@ -12,6 +12,7 @@
 
 import { geminiRateLimiter } from './rate-limiter';
 import { parseAIJson } from './openai';
+import { getAllCompetitorDomains } from './local-competitor-data';
 import type { ProductIdentity } from '@/types';
 import type { CompetitorPrice, CompetitorSearchResult } from './competitors';
 
@@ -20,7 +21,7 @@ const PRIMARY_PRICE_AUTHORITIES = [
   'dragonchewer.com', 'marijuanapackaging.com', 'greentechpackaging.com',
 ];
 
-// Known retail smoke shop domains — same list as openai-search.ts
+// Known retail smoke shop domains — includes all curated competitor domains
 const RETAIL_SMOKE_SHOPS = [
   'dragonchewer.com', 'marijuanapackaging.com', 'greentechpackaging.com',
   'smokea.com', 'dankgeek.com', 'everythingfor420.com', 'grasscity.com',
@@ -29,6 +30,7 @@ const RETAIL_SMOKE_SHOPS = [
   'tokeplanet.com', 'shopstaywild.com', 'paborito.com', 'stoners.com',
   'badassglass.com', 'dankstop.com', 'hemper.co', 'ssmokeshop.com',
   'worldofbongs.com', 'bongoutlet.com', 'aqualabtechnologies.com',
+  ...getAllCompetitorDomains(),
 ];
 
 function getGeminiKey(): string {
@@ -433,11 +435,15 @@ async function executeGeminiSearch(
 export async function searchCompetitorsGemini(
   product: { title: string; vendor: string | null; productType: string | null },
   identity: ProductIdentity,
+  prioritySearchInstruction?: string,
 ): Promise<CompetitorSearchResult> {
   const productName = identity.identifiedAs || product.title;
   const brand = product.vendor || identity.brand || '';
 
-  const isOilSlick = (brand || '').toLowerCase().includes('oil slick');
+  const prioritySites = prioritySearchInstruction || `
+1. **SEARCH THESE SITES FIRST** (primary price authorities — their prices carry the most weight):
+   - dragonchewer.com — search site:dragonchewer.com for "${productName}"
+   - marijuanapackaging.com — search site:marijuanapackaging.com for "${productName}"`;
 
   const searchPrompt = `Find retail prices for this product online. Search multiple stores and report back with specific prices.
 
@@ -447,16 +453,13 @@ BRAND/VENDOR: ${brand || 'Unknown'}
 TYPE: ${identity.productType || product.productType || 'Unknown'}
 KEY FEATURES: ${(identity.keyFeatures || []).join(', ')}
 
-Search these specific sites FIRST (primary price authorities):
-- dragonchewer.com "${productName}"
-- marijuanapackaging.com "${productName}"
-- greentechpackaging.com "${productName}"
-${isOilSlick ? '⚠️ This is an OIL SLICK product — dragonchewer.com, marijuanapackaging.com, and greentechpackaging.com are the LARGEST direct competitors. Their prices MUST be included if they carry this or similar products.' : ''}
-
-Then search other smoke shop retailers: smokea.com, grasscity.com, dankgeek.com, everythingfor420.com
-Exclude wholesale sites (alibaba, dhgate).
-
-IMPORTANT: Report the actual retail sale prices you find. Include the store domain, product URL, listing title, and exact price for each result.
+INSTRUCTIONS:
+${prioritySites}
+2. Then search other online smoke shops and retail stores for additional data points
+3. Focus on finding actual retail sale prices (NOT wholesale, NOT bulk pricing)
+4. Also check: smokea.com, grasscity.com, dankgeek.com, everythingfor420.com, brotherswithglass.com, smokecartel.com
+5. Exclude wholesale sites (alibaba, dhgate, etc.)
+6. Include the URL, store name, product title, and price for each result
 
 Format your response as JSON:
 {"competitors":[{"source":"domain.com","url":"full URL","title":"listing title","price":12.99,"isKnownRetailer":true}],"searchSummary":"summary"}`;
@@ -517,11 +520,15 @@ Format your response as JSON:
 export async function searchCompetitorsGeminiAmazon(
   product: { title: string; vendor: string | null; productType: string | null },
   identity: ProductIdentity,
+  prioritySearchInstruction?: string,
 ): Promise<CompetitorSearchResult> {
   const productName = identity.identifiedAs || product.title;
   const brand = product.vendor || identity.brand || '';
 
-  const isOilSlick = (brand || '').toLowerCase().includes('oil slick');
+  const prioritySites = prioritySearchInstruction || `
+1. **SEARCH THESE SITES FIRST** (primary price authorities):
+   - dragonchewer.com — search site:dragonchewer.com for "${productName}"
+   - marijuanapackaging.com — search site:marijuanapackaging.com for "${productName}"`;
 
   const searchPrompt = `Find retail prices for this product. Search the following stores and report specific prices.
 
@@ -531,15 +538,12 @@ BRAND/VENDOR: ${brand || 'Unknown'}
 TYPE: ${identity.productType || product.productType || 'Unknown'}
 KEY FEATURES: ${(identity.keyFeatures || []).join(', ')}
 
-Search these specific sites FIRST (primary price authorities):
-- dragonchewer.com "${productName}"
-- marijuanapackaging.com "${productName}"
-- greentechpackaging.com "${productName}"
-${isOilSlick ? '⚠️ This is an OIL SLICK product — these are the LARGEST direct competitors. Their prices MUST be included.' : ''}
-
-Then also search amazon.com for this product or similar products.
-
-IMPORTANT: Report the actual retail sale prices you find. For EACH result include the store domain, full product URL, listing title, and exact price. Make sure to match the SAME pack size / quantity as the product above.
+INSTRUCTIONS:
+${prioritySites}
+2. Then search amazon.com for this product or very similar products
+3. Find actual retail/sale prices (NOT wholesale, NOT bulk pricing)
+4. Include the URL, store name, listing title, and price for each result
+5. If no exact match, include similar products in the same category
 
 Format your response as JSON:
 {"competitors":[{"source":"domain.com","url":"full URL","title":"listing title","price":12.99,"isKnownRetailer":true}],"searchSummary":"summary"}`;

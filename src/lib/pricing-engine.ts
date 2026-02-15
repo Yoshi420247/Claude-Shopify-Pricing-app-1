@@ -8,6 +8,12 @@ import { geminiChatCompletion, searchCompetitorsGemini, searchCompetitorsGeminiA
 import { searchCompetitors, type CompetitorSearchResult } from './competitors';
 import { searchCompetitorsOpenAI, searchCompetitorsAmazon } from './openai-search';
 import { createServerClient } from './supabase';
+import {
+  getKnownPriceBenchmarks,
+  buildSearchInstruction,
+  isOilSlickVendor,
+  isWYNVendor,
+} from './local-competitor-data';
 
 export type SearchMode = 'brave' | 'openai' | 'amazon' | 'none';
 export type Provider = 'openai' | 'claude' | 'gemini';
@@ -177,7 +183,16 @@ export async function analyzePricing(
   );
 
   // Primary price authority domains — their prices are the ultimate benchmark
-  const PRIMARY_AUTHORITIES = ['dragonchewer.com', 'marijuanapackaging.com', 'greentechpackaging.com'];
+  // For WYN products, brand DTC sites and tier-1 competitors are also primary
+  const isWYN = isWYNVendor(product.vendor);
+  const isOS = isOilSlickVendor(product.vendor);
+  const PRIMARY_AUTHORITIES = isWYN
+    ? ['elementvape.com', 'dankgeek.com', 'smokecartel.com', 'aqualabtechnologies.com', 'boomheadshop.com',
+       'lookah.com', 'smylelabs.com', 'glasscookiessf.com', 'monarkgallery.com', 'maventorch.com']
+    : isOS
+    ? ['420packaging.com', 'cannaline.com', '420stock.com', 'mjwholesale.com', 'dragonchewer.com',
+       'marijuanapackaging.com', 'greentechpackaging.com', 'gamutpackaging.com', 'kushsupplyco.com']
+    : ['dragonchewer.com', 'marijuanapackaging.com', 'greentechpackaging.com'];
 
   // Build competitor sections
   let competitorSection = '';
@@ -657,37 +672,60 @@ export async function runFullAnalysis(
     }
 
     // Step 2: Search competitors
+    // 2a: Check local competitor database FIRST (curated vendor-tagged data)
     let competitorData: CompetitorSearchResult;
     const productSearch = { title: product.title, vendor: product.vendor, productType: product.product_type };
+    const localBenchmarks = getKnownPriceBenchmarks(productSearch, identity);
+    const hasLocalData = localBenchmarks.length > 0;
+    const prioritySearchInstruction = buildSearchInstruction(product.vendor, product.product_type, identity);
+
+    if (hasLocalData) {
+      onProgress?.(`Found ${localBenchmarks.length} known competitor price(s) from local database`);
+    }
+
+    // 2b: Run web search (with priority domains injected into prompts)
     if (searchMode === 'none') {
       onProgress?.('Skipping competitor search...');
       competitorData = { competitors: [], rawResults: [], excluded: [], queries: [] };
     } else if (searchMode === 'amazon') {
       if (provider === 'claude') {
         onProgress?.('Searching Amazon (Claude web search)...');
-        competitorData = await searchCompetitorsClaudeAmazon(productSearch, identity);
+        competitorData = await searchCompetitorsClaudeAmazon(productSearch, identity, prioritySearchInstruction);
       } else if (provider === 'gemini') {
         onProgress?.('Searching Amazon (Gemini Google Search)...');
-        competitorData = await searchCompetitorsGeminiAmazon(productSearch, identity);
+        competitorData = await searchCompetitorsGeminiAmazon(productSearch, identity, prioritySearchInstruction);
       } else {
         onProgress?.('Searching Amazon (OpenAI web search)...');
-        competitorData = await searchCompetitorsAmazon(productSearch, identity);
+        competitorData = await searchCompetitorsAmazon(productSearch, identity, prioritySearchInstruction);
       }
     } else if (searchMode === 'brave') {
       onProgress?.('Searching competitors (Brave)...');
-      competitorData = await searchCompetitors(productSearch, identity, 3);
+      competitorData = await searchCompetitors(productSearch, identity, 3, prioritySearchInstruction);
     } else {
       // searchMode === 'openai' (default) — route to provider's web search
       if (provider === 'claude') {
         onProgress?.('Searching competitors (Claude web search)...');
-        competitorData = await searchCompetitorsClaude(productSearch, identity);
+        competitorData = await searchCompetitorsClaude(productSearch, identity, prioritySearchInstruction);
       } else if (provider === 'gemini') {
         onProgress?.('Searching competitors (Gemini Google Search)...');
-        competitorData = await searchCompetitorsGemini(productSearch, identity);
+        competitorData = await searchCompetitorsGemini(productSearch, identity, prioritySearchInstruction);
       } else {
         onProgress?.('Searching competitors (OpenAI web search)...');
-        competitorData = await searchCompetitorsOpenAI(productSearch, identity);
+        competitorData = await searchCompetitorsOpenAI(productSearch, identity, prioritySearchInstruction);
       }
+    }
+
+    // 2c: Merge local benchmarks INTO competitor data (prepend — highest confidence)
+    if (hasLocalData) {
+      const webPrices = new Set(competitorData.competitors.map(c => c.price));
+      for (const benchmark of localBenchmarks) {
+        // Don't duplicate prices already found via web search
+        if (!webPrices.has(benchmark.price)) {
+          competitorData.competitors.unshift(benchmark);
+          webPrices.add(benchmark.price);
+        }
+      }
+      competitorData.queries.unshift('local-competitor-database');
     }
 
     // Step 3: AI pricing analysis
