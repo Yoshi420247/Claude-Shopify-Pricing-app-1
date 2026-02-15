@@ -376,18 +376,19 @@ const OIL_SLICK_PRICE_BENCHMARKS: KnownPriceBenchmark[] = [
     category: 'Glass Jars', notes: '36ct. Straight-sided clear glass. May not include CR lid.' },
 
   // === 7ml UV-RESISTANT CONCENTRATE JARS (small, heavy bottom) ===
+  // All prices normalized to 80ct pack equivalent for consistent comparison
   { productPattern: /7\s*ml.*(?:uv|glass).*(?:jar|container)/i,
     competitorDomain: 'amazon.com', competitorName: 'Amazon', price: 63.99,
     category: 'Glass Jars', notes: '80ct pack. UV resistant heavy bottom, CR black lids. Exact match.' },
   { productPattern: /7\s*ml.*(?:uv|glass).*(?:jar|container)/i,
-    competitorDomain: 'greentechpackaging.com', competitorName: 'Green Tech Packaging', price: 86.40,
-    category: 'Glass Jars', notes: '320ct ($86.40), ~$21.60 per 80ct equivalent. 7ml CR glass.' },
+    competitorDomain: 'greentechpackaging.com', competitorName: 'Green Tech Packaging', price: 21.60,
+    category: 'Glass Jars', notes: '320ct @ $86.40 = $0.27/unit. Normalized to 80ct equivalent.' },
   { productPattern: /7\s*ml.*(?:uv|glass).*(?:jar|container)/i,
-    competitorDomain: 'premiumvials.com', competitorName: 'Premium Vials', price: 89.99,
-    category: 'Glass Jars', notes: '320ct. Ultraviolet glass concentrate jars.' },
+    competitorDomain: 'premiumvials.com', competitorName: 'Premium Vials', price: 22.50,
+    category: 'Glass Jars', notes: '320ct @ $89.99 = $0.28/unit. Normalized to 80ct equivalent.' },
   { productPattern: /7\s*ml.*(?:concentrate|glass).*(?:jar|container)/i,
     competitorDomain: 'dragonchewer.com', competitorName: 'Dragon Chewer', price: 44.99,
-    category: 'Glass Jars', notes: '7ml premium glass concentrate jars. White glass option.' },
+    category: 'Glass Jars', notes: '7ml premium glass concentrate jars. Approx 80ct equivalent.' },
 
   // === CHILD-RESISTANT GLASS JARS (other sizes) ===
   { productPattern: /(?:1|2|3|4|5)\s*oz.*(?:child.?resistant|cr).*(?:glass\s*jar|jar)/i,
