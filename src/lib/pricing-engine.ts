@@ -72,6 +72,23 @@ export function detectPackSize(title: string, variantTitle?: string): PackInfo {
     }
   }
 
+  // Check if variant title is a standalone number (e.g. "80", "160", "320")
+  // This is common for packaging products with quantity-based variants
+  if (variantTitle) {
+    const standaloneMatch = variantTitle.trim().match(/^(\d+)$/);
+    if (standaloneMatch) {
+      const size = parseInt(standaloneMatch[1], 10);
+      // Only treat as pack size if it's a reasonable bulk quantity (>=6)
+      if (size >= 6 && size <= 10000) {
+        return {
+          packSize: size,
+          isMultiPack: true,
+          packLabel: `${size}-unit variant`,
+        };
+      }
+    }
+  }
+
   return { packSize: 1, isMultiPack: false, packLabel: '' };
 }
 
@@ -494,13 +511,15 @@ export async function deliberatePricing(
   identity: ProductIdentity,
   settings: Settings,
   model: string,
-  provider: Provider = 'openai'
+  provider: Provider = 'openai',
+  packInfo?: PackInfo,
 ): Promise<DeliberationResult> {
   const cost = variant.cost || 0;
   const currentPrice = variant.price;
   const msrp = variant.compare_at_price;
   const originTier = identity.originTier || 'unknown';
   const descText = (product.description || product.description_html?.replace(/<[^>]*>/g, ' ') || '').substring(0, 600);
+  const pack = packInfo || detectPackSize(product.title, variant.title || undefined);
 
   // Calculate cost-based optimal even without competitors
   const pricingContext: PricingContext = {
@@ -543,6 +562,15 @@ Current Price: $${currentPrice.toFixed(2)}
 Cost: ${cost > 0 ? '$' + cost.toFixed(2) : 'UNKNOWN'}
 ${cost > 0 ? `Current Margin: ${((currentPrice - cost) / cost * 100).toFixed(1)}%` : ''}
 MSRP/Compare At: ${msrp ? '$' + msrp.toFixed(2) : 'None'}
+${pack.isMultiPack ? `
+⚠️ CRITICAL — MULTI-PACK PRODUCT:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+This product is a ${pack.packLabel} containing ${pack.packSize} units.
+You MUST price the ENTIRE pack of ${pack.packSize} units, NOT a single unit.
+Current price $${currentPrice.toFixed(2)} is for ALL ${pack.packSize} units ($${(currentPrice / pack.packSize).toFixed(2)}/unit).
+Your deliberated price must ALSO be for all ${pack.packSize} units.
+A single jar/unit typically costs $0.50-$3.00. The PACK should cost $${(pack.packSize * 0.50).toFixed(2)}-$${(pack.packSize * 3.00).toFixed(2)}.
+DO NOT recommend a single-unit price like $3-5 for a ${pack.packSize}-pack!` : ''}
 
 INITIAL ANALYSIS (insufficient data):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -707,6 +735,7 @@ export async function runFullAnalysis(
   searchMode: SearchMode = 'brave',
   provider: Provider = 'openai',
   fast: boolean = false,
+  knownPackSize?: number,  // Pass from volume-aware analysis when pack size is known
 ): Promise<{
   suggestedPrice: number | null;
   confidence: string | null;
@@ -748,7 +777,17 @@ export async function runFullAnalysis(
     const productSearch = { title: product.title, vendor: product.vendor, productType: product.product_type };
     const localBenchmarks = getKnownPriceBenchmarks(productSearch, identity);
     const hasLocalData = localBenchmarks.length > 0;
-    const packInfoForSearch = detectPackSize(product.title, variant.title || undefined);
+
+    // Detect pack size — use knownPackSize (from volume-aware analysis) if available
+    let packInfoForSearch = detectPackSize(product.title, variant.title || undefined);
+    if (!packInfoForSearch.isMultiPack && knownPackSize && knownPackSize > 1) {
+      packInfoForSearch = {
+        packSize: knownPackSize,
+        isMultiPack: true,
+        packLabel: `${knownPackSize}-pack (from variant)`,
+      };
+    }
+
     let prioritySearchInstruction = buildSearchInstruction(product.vendor, product.product_type, identity);
 
     // Add pack-size awareness to search instructions
@@ -896,7 +935,7 @@ Report whether each price is per-unit or per-pack in the title field.`;
       // Step 5: Deep deliberation if still uncertain
       if (hasInsufficientData || hasLowConfidence || !analysis.suggestedPrice) {
         onProgress?.('Deep deliberation...');
-        const deliberation = await deliberatePricing(product, variant, analysis, identity, settings, model, provider);
+        const deliberation = await deliberatePricing(product, variant, analysis, identity, settings, model, provider, packInfoForSearch);
         if (deliberation.deliberatedPrice) {
           analysis.suggestedPrice = deliberation.deliberatedPrice;
           analysis.confidence = deliberation.confidence;
@@ -1149,7 +1188,8 @@ export async function runVolumeAwareAnalysis(
 
   onProgress?.(`Quantity variants detected (${targetGroup.variants.map(v => v.quantity).join(', ')}). AI-analyzing base tier (qty ${baseQty})...`);
 
-  const baseResult = await runFullAnalysis(product, baseVariant, settings, onProgress, searchMode, provider, fast);
+  // Pass baseQty as knownPackSize so the AI knows to price for all units, not one
+  const baseResult = await runFullAnalysis(product, baseVariant, settings, onProgress, searchMode, provider, fast, baseQty);
 
   if (baseResult.error || !baseResult.suggestedPrice) {
     // Base analysis failed — can't derive other tiers. Return only base result.
