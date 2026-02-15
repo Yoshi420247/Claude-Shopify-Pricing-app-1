@@ -352,6 +352,73 @@ const WYN_COMPETITORS: VendorCompetitor[] = [
 ];
 
 // ============================================================================
+// KNOWN PRICE BENCHMARKS — Oil Slick packaging products
+// ============================================================================
+// Source: Competitor web research for Oil Slick product categories.
+// Prices are per-pack/per-case as listed on competitor sites.
+
+const OIL_SLICK_PRICE_BENCHMARKS: KnownPriceBenchmark[] = [
+  // === CHILD-RESISTANT GLASS JARS (10oz / 14g / 1/2 oz capacity) ===
+  { productPattern: /10\s*oz.*(?:child.?resistant|cr).*(?:glass\s*jar|jar)/i,
+    competitorDomain: 'greenrushpackaging.com', competitorName: 'Green Rush Packaging', price: 30.64,
+    category: 'Glass Jars', notes: '36ct case. White CR lid. Lowest price found.' },
+  { productPattern: /10\s*oz.*(?:child.?resistant|cr).*(?:glass\s*jar|jar)/i,
+    competitorDomain: 'greatpacificpackaging.com', competitorName: 'Great Pacific Packaging', price: 35.50,
+    category: 'Glass Jars', notes: '36/case. Matte black CR lid.' },
+  { productPattern: /10\s*oz.*(?:child.?resistant|cr).*(?:glass\s*jar|jar)/i,
+    competitorDomain: 'thevialstore.com', competitorName: 'The Vial Store', price: 59.99,
+    category: 'Glass Jars', notes: '36ct. Grade A pharmaceutical glass, black CR cap.' },
+  { productPattern: /10\s*oz.*(?:child.?resistant|cr).*(?:glass\s*jar|jar)/i,
+    competitorDomain: 'greentechpackaging.com', competitorName: 'Green Tech Packaging', price: 77.04,
+    category: 'Glass Jars', notes: '72ct ($154.08), normalized to 36ct equivalent.' },
+  { productPattern: /10\s*oz.*(?:glass\s*jar|jar).*(?:straight|clear)/i,
+    competitorDomain: '420packaging.com', competitorName: '420 Packaging', price: 24.95,
+    category: 'Glass Jars', notes: '36ct. Straight-sided clear glass. May not include CR lid.' },
+
+  // === CHILD-RESISTANT GLASS JARS (other sizes) ===
+  { productPattern: /(?:1|2|3|4|5)\s*oz.*(?:child.?resistant|cr).*(?:glass\s*jar|jar)/i,
+    competitorDomain: 'dragonchewer.com', competitorName: 'Dragon Chewer', price: 18.99,
+    category: 'Glass Jars', notes: 'Small CR jars ~$15-25 per case. Supercell jar line.' },
+  { productPattern: /(?:1|2|3|4|5)\s*oz.*(?:child.?resistant|cr).*(?:glass\s*jar|jar)/i,
+    competitorDomain: '420packaging.com', competitorName: '420 Packaging', price: 14.95,
+    category: 'Glass Jars', notes: 'Small CR jars. Price-beat guarantee.' },
+
+  // === MYLAR BAGS ===
+  { productPattern: /mylar\s*bag/i,
+    competitorDomain: '420packaging.com', competitorName: '420 Packaging', price: 12.99,
+    category: 'Mylar Bags', notes: 'Per 100ct pack. Wide selection.' },
+  { productPattern: /mylar\s*bag/i,
+    competitorDomain: 'cannaline.com', competitorName: 'Cannaline', price: 15.99,
+    category: 'Mylar Bags', notes: 'Compound film barrier bags. Custom printing available.' },
+
+  // === PRE-ROLL TUBES ===
+  { productPattern: /pre.?roll\s*tube/i,
+    competitorDomain: '420packaging.com', competitorName: '420 Packaging', price: 9.99,
+    category: 'Pre-Roll Tubes', notes: 'Per 100ct pack. CR options available.' },
+  { productPattern: /pre.?roll\s*tube/i,
+    competitorDomain: 'dragonchewer.com', competitorName: 'Dragon Chewer', price: 11.99,
+    category: 'Pre-Roll Tubes', notes: 'CR-focused pre-roll packaging.' },
+
+  // === SYRINGES ===
+  { productPattern: /(?:glass\s*)?syringe/i,
+    competitorDomain: 'gamutpackaging.com', competitorName: 'Gamut Packaging', price: 24.99,
+    category: 'Syringes', notes: 'Glass syringes. Luer lock tips.' },
+
+  // === FEP / PTFE ===
+  { productPattern: /fep\s*(?:sheet|liner|film)/i,
+    competitorDomain: '420stock.com', competitorName: '420 Stock', price: 8.99,
+    category: 'FEP', notes: 'Aggressive FEP pricing.' },
+  { productPattern: /fep\s*(?:sheet|liner|film)/i,
+    competitorDomain: 'thepressclub.co', competitorName: 'The Press Club', price: 14.99,
+    category: 'FEP', notes: 'FEP sheets. Extraction community brand.' },
+
+  // === SILICONE PADS / DAB MATS ===
+  { productPattern: /silicone\s*(?:pad|mat|dab\s*mat)/i,
+    competitorDomain: 'vsyndicate.com', competitorName: 'V Syndicate (Slikks)', price: 19.99,
+    category: 'Silicone Pads', notes: 'Licensed art prints on silicone.' },
+];
+
+// ============================================================================
 // KNOWN PRICE BENCHMARKS — Actual competitor prices from WYN research
 // ============================================================================
 // Source: WYN_Vendor_Tagged_Competitors_FINAL.xlsx — Price Benchmarks sheet
@@ -663,7 +730,10 @@ export function getKnownPriceBenchmarks(
   const title = product.title || '';
   const brand = product.vendor || identity?.brand || '';
 
-  for (const benchmark of WYN_PRICE_BENCHMARKS) {
+  // Search both Oil Slick and WYN price benchmarks
+  const allBenchmarks = [...OIL_SLICK_PRICE_BENCHMARKS, ...WYN_PRICE_BENCHMARKS];
+
+  for (const benchmark of allBenchmarks) {
     // Check if product title matches the pattern
     if (!benchmark.productPattern.test(title)) continue;
 

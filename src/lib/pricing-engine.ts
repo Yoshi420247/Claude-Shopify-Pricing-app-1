@@ -18,6 +18,63 @@ import {
 export type SearchMode = 'brave' | 'openai' | 'amazon' | 'none';
 export type Provider = 'openai' | 'claude' | 'gemini';
 
+// ============================================================================
+// Pack-Size Detection — prevents per-unit vs per-pack pricing confusion
+// ============================================================================
+// Many products are sold in multi-packs (e.g. "36-Pack", "Case of 24").
+// Competitor searches often return per-unit prices, causing massive underpricing
+// when compared against pack listings. This detects pack sizes from titles.
+
+export interface PackInfo {
+  packSize: number;        // Number of units in the pack (1 if single)
+  isMultiPack: boolean;    // True if pack size > 1
+  packLabel: string;       // The matched text (e.g. "36-Pack", "Case of 24")
+}
+
+/**
+ * Detect pack/case/bundle size from product title or variant title.
+ * Returns pack size info to help the AI compare prices correctly.
+ */
+export function detectPackSize(title: string, variantTitle?: string): PackInfo {
+  const text = `${title} ${variantTitle || ''}`;
+
+  // Patterns for multi-pack detection (ordered by specificity)
+  const patterns = [
+    // "36-Pack", "36 Pack", "36pk", "36-pk"
+    /\b(\d+)\s*[-–]?\s*(?:pack|pk)\b/i,
+    // "Case of 24", "Box of 12"
+    /\b(?:case|box|set|bag|carton)\s+of\s+(\d+)\b/i,
+    // "24-Count", "36 Count", "36ct", "36-ct"
+    /\b(\d+)\s*[-–]?\s*(?:count|ct)\b/i,
+    // "24/case", "36/box", "72/box"
+    /\b(\d+)\s*\/\s*(?:case|box|bag|pack|carton|each)\b/i,
+    // "Qty 36", "Quantity: 36"
+    /\bqty\.?\s*:?\s*(\d+)\b/i,
+    /\bquantity\s*:?\s*(\d+)\b/i,
+    // "(36)" at end of title — common in packaging products
+    /\((\d+)\)\s*$/,
+    // "36 pcs", "36 pieces"
+    /\b(\d+)\s*(?:pcs|pieces?)\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) {
+      const size = parseInt(match[1], 10);
+      // Reasonable pack sizes: 2 to 10000
+      if (size >= 2 && size <= 10000) {
+        return {
+          packSize: size,
+          isMultiPack: true,
+          packLabel: match[0].trim(),
+        };
+      }
+    }
+  }
+
+  return { packSize: 1, isMultiPack: false, packLabel: '' };
+}
+
 /** Get the appropriate chat completion function for the provider */
 function getCompletionFn(provider: Provider) {
   if (provider === 'claude') return claudeChatCompletion;
@@ -162,6 +219,11 @@ export async function analyzePricing(
   const originTier = identity.originTier || 'unknown';
 
   // ============================================================================
+  // PACK-SIZE DETECTION — prevent per-unit vs per-pack pricing confusion
+  // ============================================================================
+  const packInfo = detectPackSize(product.title, variant.title || undefined);
+
+  // ============================================================================
   // ADVANCED: Calculate optimal price using pricing strategies module
   // ============================================================================
   const pricingContext: PricingContext = {
@@ -208,6 +270,14 @@ ${competitorData.competitors.map((c, i) => {
 }).join('\n\n')}
 
 NOTE: Prices from dragonchewer.com and marijuanapackaging.com are the PRIMARY competitive benchmarks. If present, their prices should heavily influence your recommendation.
+${packInfo.isMultiPack ? `
+⚠️ CRITICAL PACK-SIZE WARNING: This product is a ${packInfo.packLabel} (${packInfo.packSize} units).
+Competitor prices may be PER UNIT or for DIFFERENT pack sizes. You MUST:
+1. Check if each competitor price is for a single unit or a multi-pack
+2. Compare APPLES TO APPLES — normalize all prices to the same pack size
+3. A per-unit price of $2 for a single jar ≠ a fair price for ${packInfo.packSize} jars
+4. Expected pack price ≈ per-unit price × ${packInfo.packSize} (with possible bulk discount)
+5. If competitor prices seem too low (under $${(currentPrice * 0.3).toFixed(2)}), they are almost certainly per-unit prices` : ''}
 
 COMPETITOR INTELLIGENCE SUMMARY:
 - Weighted Median Price: $${competitorIntel.weightedMedian.toFixed(2)}
@@ -356,6 +426,7 @@ PRODUCT DETAILS:
 - Current Price: $${currentPrice.toFixed(2)}
 - Cost: ${cost > 0 ? '$' + cost.toFixed(2) + ` (current gross margin: ${((currentPrice - cost) / currentPrice * 100).toFixed(1)}%)` : 'UNKNOWN - use tier-based estimation'}
 ${msrp ? `- MSRP/Compare-At: $${msrp.toFixed(2)}` : ''}
+${packInfo.isMultiPack ? `- ⚠️ MULTI-PACK: This is a ${packInfo.packLabel} (${packInfo.packSize} units per pack). Price the ENTIRE pack, NOT a single unit!` : ''}
 ${descText ? `\nDescription:\n${descText}` : ''}
 
 AI PRODUCT IDENTIFICATION:
@@ -677,7 +748,16 @@ export async function runFullAnalysis(
     const productSearch = { title: product.title, vendor: product.vendor, productType: product.product_type };
     const localBenchmarks = getKnownPriceBenchmarks(productSearch, identity);
     const hasLocalData = localBenchmarks.length > 0;
-    const prioritySearchInstruction = buildSearchInstruction(product.vendor, product.product_type, identity);
+    const packInfoForSearch = detectPackSize(product.title, variant.title || undefined);
+    let prioritySearchInstruction = buildSearchInstruction(product.vendor, product.product_type, identity);
+
+    // Add pack-size awareness to search instructions
+    if (packInfoForSearch.isMultiPack) {
+      prioritySearchInstruction += `\n\n⚠️ IMPORTANT: This product is a ${packInfoForSearch.packLabel} (${packInfoForSearch.packSize} units).
+Search for prices of the SAME PACK SIZE (${packInfoForSearch.packSize}-pack, ${packInfoForSearch.packSize}-count, case of ${packInfoForSearch.packSize}).
+If you find per-unit prices, multiply by ${packInfoForSearch.packSize} to get the pack price.
+Report whether each price is per-unit or per-pack in the title field.`;
+    }
 
     if (hasLocalData) {
       onProgress?.(`Found ${localBenchmarks.length} known competitor price(s) from local database`);
@@ -726,6 +806,34 @@ export async function runFullAnalysis(
         }
       }
       competitorData.queries.unshift('local-competitor-database');
+    }
+
+    // 2d: Pack-size sanity check — detect and flag per-unit prices for multi-packs
+    if (packInfoForSearch.isMultiPack && competitorData.competitors.length > 0) {
+      const packSize = packInfoForSearch.packSize;
+      // If most competitor prices are suspiciously low (likely per-unit), scale them up
+      // Heuristic: if a price is less than current_price * 0.5 AND less than $10 for a 10+ pack,
+      // it's almost certainly a per-unit price
+      const currentP = variant.price || 1;
+      const scaledCompetitors = competitorData.competitors.map(c => {
+        const likelyPerUnit = (
+          packSize >= 6 &&
+          c.price < currentP * 0.5 &&
+          c.price < packSize * 3 &&  // Less than $3/unit × pack size
+          c.extractionMethod !== 'local-competitor-database' // Don't touch curated data
+        );
+        if (likelyPerUnit) {
+          return {
+            ...c,
+            title: `${c.title} [SCALED: likely per-unit price × ${packSize}]`,
+            price: Math.round(c.price * packSize * 100) / 100,
+            extractionMethod: `${c.extractionMethod} (scaled ×${packSize})`,
+          };
+        }
+        return c;
+      });
+      competitorData = { ...competitorData, competitors: scaledCompetitors };
+      onProgress?.(`Pack-size check: ${packInfoForSearch.packLabel} detected, validated ${scaledCompetitors.length} competitor prices`);
     }
 
     // Step 3: AI pricing analysis
@@ -803,6 +911,27 @@ export async function runFullAnalysis(
         }
       }
     } // end if (!fast)
+
+    // ========================================================================
+    // FINAL SANITY CHECK: Multi-pack price floor
+    // ========================================================================
+    // If the suggested price for a multi-pack is less than $2 per unit,
+    // it's almost certainly wrong (per-unit vs per-pack confusion leaked through).
+    if (packInfoForSearch.isMultiPack && analysis.suggestedPrice) {
+      const perUnit = analysis.suggestedPrice / packInfoForSearch.packSize;
+      const minPerUnit = 0.50; // Absolute floor: $0.50 per unit
+      if (perUnit < minPerUnit) {
+        const correctedPrice = Math.round(packInfoForSearch.packSize * minPerUnit * 100) / 100;
+        const originalPrice = analysis.suggestedPrice;
+        analysis.suggestedPrice = correctedPrice;
+        analysis.confidence = 'low';
+        analysis.reasoning = [
+          ...(analysis.reasoning || []),
+          `PACK-SIZE CORRECTION: Original price $${originalPrice.toFixed(2)} = $${perUnit.toFixed(2)}/unit for a ${packInfoForSearch.packSize}-pack is below minimum floor. Adjusted to $${correctedPrice.toFixed(2)} ($${minPerUnit.toFixed(2)}/unit minimum).`,
+        ];
+        onProgress?.(`⚠️ Pack-size correction: $${originalPrice.toFixed(2)} → $${correctedPrice.toFixed(2)} (${packInfoForSearch.packLabel} floor)`);
+      }
+    }
 
     return {
       suggestedPrice: analysis.suggestedPrice,
