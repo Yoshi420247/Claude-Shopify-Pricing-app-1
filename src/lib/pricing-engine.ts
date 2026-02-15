@@ -288,13 +288,14 @@ ${competitorData.competitors.map((c, i) => {
 
 NOTE: Prices from dragonchewer.com and marijuanapackaging.com are the PRIMARY competitive benchmarks. If present, their prices should heavily influence your recommendation.
 ${packInfo.isMultiPack ? `
-⚠️ CRITICAL PACK-SIZE WARNING: This product is a ${packInfo.packLabel} (${packInfo.packSize} units).
+⚠️ CRITICAL PACK-SIZE WARNING: This product is a ${packInfo.packLabel} (${packInfo.packSize} units — jars + lids together).
 Competitor prices may be PER UNIT or for DIFFERENT pack sizes. You MUST:
 1. Check if each competitor price is for a single unit or a multi-pack
-2. Compare APPLES TO APPLES — normalize all prices to the same pack size
-3. A per-unit price of $2 for a single jar ≠ a fair price for ${packInfo.packSize} jars
-4. Expected pack price ≈ per-unit price × ${packInfo.packSize} (with possible bulk discount)
-5. If competitor prices seem too low (under $${(currentPrice * 0.3).toFixed(2)}), they are almost certainly per-unit prices` : ''}
+2. Compare APPLES TO APPLES — normalize all prices to the SAME pack size (${packInfo.packSize})
+3. Packaging products (jars + lids) typically cost $0.40-$1.00 per unit at retail
+4. Expected ${packInfo.packSize}-pack price ≈ $${(packInfo.packSize * 0.40).toFixed(2)}-$${(packInfo.packSize * 1.00).toFixed(2)}
+5. Any competitor price under $10 for a ${packInfo.packSize}+ pack is DEFINITELY per-unit — do NOT use it as a pack price
+6. Weight competitor prices that explicitly mention the SAME pack size (${packInfo.packSize}) much higher` : ''}
 
 COMPETITOR INTELLIGENCE SUMMARY:
 - Weighted Median Price: $${competitorIntel.weightedMedian.toFixed(2)}
@@ -443,7 +444,7 @@ PRODUCT DETAILS:
 - Current Price: $${currentPrice.toFixed(2)}
 - Cost: ${cost > 0 ? '$' + cost.toFixed(2) + ` (current gross margin: ${((currentPrice - cost) / currentPrice * 100).toFixed(1)}%)` : 'UNKNOWN - use tier-based estimation'}
 ${msrp ? `- MSRP/Compare-At: $${msrp.toFixed(2)}` : ''}
-${packInfo.isMultiPack ? `- ⚠️ MULTI-PACK: This is a ${packInfo.packLabel} (${packInfo.packSize} units per pack). Price the ENTIRE pack, NOT a single unit!` : ''}
+${packInfo.isMultiPack ? `- ⚠️ MULTI-PACK: This is a ${packInfo.packLabel} (${packInfo.packSize} units per pack, each unit = jar + lid). Price the ENTIRE pack, NOT a single unit!` : ''}
 ${descText ? `\nDescription:\n${descText}` : ''}
 
 AI PRODUCT IDENTIFICATION:
@@ -565,12 +566,14 @@ MSRP/Compare At: ${msrp ? '$' + msrp.toFixed(2) : 'None'}
 ${pack.isMultiPack ? `
 ⚠️ CRITICAL — MULTI-PACK PRODUCT:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-This product is a ${pack.packLabel} containing ${pack.packSize} units.
+This product is a ${pack.packLabel} containing ${pack.packSize} units (each unit = jar + lid together).
 You MUST price the ENTIRE pack of ${pack.packSize} units, NOT a single unit.
 Current price $${currentPrice.toFixed(2)} is for ALL ${pack.packSize} units ($${(currentPrice / pack.packSize).toFixed(2)}/unit).
 Your deliberated price must ALSO be for all ${pack.packSize} units.
-A single jar/unit typically costs $0.50-$3.00. The PACK should cost $${(pack.packSize * 0.50).toFixed(2)}-$${(pack.packSize * 3.00).toFixed(2)}.
-DO NOT recommend a single-unit price like $3-5 for a ${pack.packSize}-pack!` : ''}
+For packaging products (jars + lids), per-unit retail price is typically $0.40-$1.00.
+The PACK of ${pack.packSize} should cost roughly $${(pack.packSize * 0.40).toFixed(2)}-$${(pack.packSize * 1.00).toFixed(2)}.
+DO NOT recommend a single-unit price like $3-5 for a ${pack.packSize}-pack!
+If the initial analysis already suggested a reasonable pack price ($20+), strongly consider keeping it.` : ''}
 
 INITIAL ANALYSIS (insufficient data):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -847,32 +850,28 @@ Report whether each price is per-unit or per-pack in the title field.`;
       competitorData.queries.unshift('local-competitor-database');
     }
 
-    // 2d: Pack-size sanity check — detect and flag per-unit prices for multi-packs
+    // 2d: Pack-size annotation — flag likely per-unit prices for AI (do NOT auto-scale)
+    // Auto-scaling by pack size is too risky (wrong assumptions cause 80x price inflation).
+    // Instead, annotate suspect prices so the AI can judge with full context.
     if (packInfoForSearch.isMultiPack && competitorData.competitors.length > 0) {
       const packSize = packInfoForSearch.packSize;
-      // If most competitor prices are suspiciously low (likely per-unit), scale them up
-      // Heuristic: if a price is less than current_price * 0.5 AND less than $10 for a 10+ pack,
-      // it's almost certainly a per-unit price
-      const currentP = variant.price || 1;
-      const scaledCompetitors = competitorData.competitors.map(c => {
-        const likelyPerUnit = (
-          packSize >= 6 &&
-          c.price < currentP * 0.5 &&
-          c.price < packSize * 3 &&  // Less than $3/unit × pack size
-          c.extractionMethod !== 'local-competitor-database' // Don't touch curated data
+      const annotatedCompetitors = competitorData.competitors.map(c => {
+        // Flag prices under $10 for large packs as potentially per-unit
+        const suspectPerUnit = (
+          packSize >= 10 &&
+          c.price < 10 &&
+          c.extractionMethod !== 'local-competitor-database'
         );
-        if (likelyPerUnit) {
+        if (suspectPerUnit) {
           return {
             ...c,
-            title: `${c.title} [SCALED: likely per-unit price × ${packSize}]`,
-            price: Math.round(c.price * packSize * 100) / 100,
-            extractionMethod: `${c.extractionMethod} (scaled ×${packSize})`,
+            title: `${c.title} [⚠️ POSSIBLY PER-UNIT — verify if this is for 1 unit or ${packSize}]`,
           };
         }
         return c;
       });
-      competitorData = { ...competitorData, competitors: scaledCompetitors };
-      onProgress?.(`Pack-size check: ${packInfoForSearch.packLabel} detected, validated ${scaledCompetitors.length} competitor prices`);
+      competitorData = { ...competitorData, competitors: annotatedCompetitors };
+      onProgress?.(`Pack-size check: ${packInfoForSearch.packLabel} detected, annotated ${annotatedCompetitors.length} competitor prices`);
     }
 
     // Step 3: AI pricing analysis
