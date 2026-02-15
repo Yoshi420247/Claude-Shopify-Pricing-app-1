@@ -48,6 +48,7 @@ src/
 ├── lib/
 │   ├── pricing-engine.ts             # Core 4-step pricing pipeline
 │   ├── pricing-strategies.ts         # 5 expert pricing algorithms
+│   ├── local-competitor-data.ts      # Curated vendor-tagged competitor database
 │   ├── openai.ts                     # GPT-5.2 client (raw fetch)
 │   ├── claude.ts                     # Claude Sonnet 4.5 client (raw fetch)
 │   ├── gemini.ts                     # Gemini 2.5-Flash client (raw fetch)
@@ -138,6 +139,33 @@ npx tsx --tsconfig tsconfig.scripts.json scripts/sync-oil-slick-pricing.ts --dry
 npx tsx --tsconfig tsconfig.scripts.json scripts/revert-prices.ts --runs 3 --dry-run
 ```
 
+## Local Competitor Database (src/lib/local-competitor-data.ts)
+
+Curated from vendor-tagged competitor analysis spreadsheets. This is the FIRST-PASS data source — checked BEFORE any external search APIs.
+
+**Source files** (in repo root):
+- `OilSlick_Vendor_Tagged_Competitors.xlsx` — 36 competitors for Oil Slick vendor products
+- `WYN_Vendor_Tagged_Competitors_FINAL (1).xlsx` — 65+ competitors for Cloud YHS/WYN vendor products
+
+**How it works:**
+1. Before web search, `getKnownPriceBenchmarks()` checks if any curated price data matches the product
+2. `buildSearchInstruction()` generates vendor-specific priority site lists injected into all AI search prompts
+3. `getAllCompetitorDomains()` expands the `RETAIL_SMOKE_SHOPS` arrays across all search modules
+4. After web search completes, local benchmarks are merged in (prepended, highest confidence)
+
+**Oil Slick categories**: glass jars, FEP/PTFE, silicone pads, mylar bags, pre-roll tubes, syringes, parchment, custom packaging
+
+**WYN/Cloud YHS brands**: Lookah, Smyle Labs, Cookies Glass, Monark Glass, Encore Glass, Maven Torches, RAW, Blazy Susan, Zig-Zag, Vibes, OCB, Clipper, aLeaf
+
+**Known price benchmarks**: ~55 product-level price points (Lookah electronics, Smyle Labs, Cookies Glass, Monark, Encore, Maven, rolling papers) with competitor domain + price
+
+**Key competitors by threat level**:
+
+| Vendor   | HIGH Threat                                                              |
+|----------|--------------------------------------------------------------------------|
+| Oil Slick | 420packaging.com, cannaline.com, 420stock.com, mjwholesale.com, dragonchewer.com, gamutpackaging.com |
+| WYN      | elementvape.com, dankgeek.com, smokecartel.com, aqualabtechnologies.com, boomheadshop.com, dankstop.com |
+
 ## Key Architecture Decisions
 
 1. **No SDK dependencies for AI** — All AI providers use raw `fetch()` calls, not official SDKs. The `openai` npm package is NOT installed.
@@ -147,6 +175,7 @@ npx tsx --tsconfig tsconfig.scripts.json scripts/revert-prices.ts --runs 3 --dry
 5. **Database-backed batches** — Batch jobs persist in `batch_jobs` table, survive page refresh/crash.
 6. **Volume pricing formula** — `price = base_price × (qty / base_qty) ^ exponent` where exponent defaults to 0.92.
 7. **Gross margin formula** — All calculations use `(price - cost) / price`, NOT markup `(price - cost) / cost`.
+8. **Local-first competitor search** — Curated vendor-tagged competitor data is checked BEFORE external search APIs. Known price benchmarks are injected with highest confidence weight.
 
 ## No Tests
 
