@@ -287,6 +287,25 @@ ${competitorData.competitors.map((c, i) => {
 }).join('\n\n')}
 
 NOTE: Prices from dragonchewer.com and marijuanapackaging.com are the PRIMARY competitive benchmarks. If present, their prices should heavily influence your recommendation.
+${(() => {
+  // Find exact-match Amazon/high-confidence benchmarks from local database
+  const localMatches = competitorData.competitors.filter(c => c.extractionMethod === 'local-competitor-database');
+  const amazonMatch = localMatches.find(c => c.source.includes('amazon'));
+  if (amazonMatch) {
+    return `
+🎯 EXACT MATCH ANCHOR: Amazon sells this IDENTICAL product for $${amazonMatch.price.toFixed(2)}.
+Amazon is the dominant price reference for consumers. Your suggested price should be
+WITHIN 15% of $${amazonMatch.price.toFixed(2)} (i.e., $${(amazonMatch.price * 0.85).toFixed(2)} - $${(amazonMatch.price * 1.15).toFixed(2)})
+unless you have strong evidence that this specific listing commands a premium.`;
+  }
+  if (localMatches.length > 0) {
+    const highest = Math.max(...localMatches.map(c => c.price));
+    return `
+🎯 LOCAL BENCHMARK ANCHOR: Curated competitor database shows prices up to $${highest.toFixed(2)} for this product.
+Your price should stay close to this range (within 20%).`;
+  }
+  return '';
+})()}
 ${packInfo.isMultiPack ? `
 ⚠️ CRITICAL PACK-SIZE WARNING: This product is a ${packInfo.packLabel} (${packInfo.packSize} units — jars + lids together).
 Competitor prices may be PER UNIT or for DIFFERENT pack sizes. You MUST:
@@ -850,28 +869,40 @@ Report whether each price is per-unit or per-pack in the title field.`;
       competitorData.queries.unshift('local-competitor-database');
     }
 
-    // 2d: Pack-size annotation — flag likely per-unit prices for AI (do NOT auto-scale)
-    // Auto-scaling by pack size is too risky (wrong assumptions cause 80x price inflation).
-    // Instead, annotate suspect prices so the AI can judge with full context.
+    // 2d: Pack-size plausibility filter — REMOVE prices that are clearly for wrong pack sizes
+    // This is critical: web searches often return prices for 320ct, 1000ct, or per-unit
+    // that contaminate the competitor intelligence and cause massive mispricing.
     if (packInfoForSearch.isMultiPack && competitorData.competitors.length > 0) {
       const packSize = packInfoForSearch.packSize;
-      const annotatedCompetitors = competitorData.competitors.map(c => {
-        // Flag prices under $10 for large packs as potentially per-unit
-        const suspectPerUnit = (
-          packSize >= 10 &&
-          c.price < 10 &&
-          c.extractionMethod !== 'local-competitor-database'
-        );
-        if (suspectPerUnit) {
-          return {
-            ...c,
-            title: `${c.title} [⚠️ POSSIBLY PER-UNIT — verify if this is for 1 unit or ${packSize}]`,
-          };
+      // Use local benchmarks as reference for plausible price range
+      const localPrices = competitorData.competitors
+        .filter(c => c.extractionMethod === 'local-competitor-database')
+        .map(c => c.price);
+      const localMax = localPrices.length > 0 ? Math.max(...localPrices) : packSize * 1.00;
+      const localMin = localPrices.length > 0 ? Math.min(...localPrices) : packSize * 0.20;
+
+      // Plausible range: from 50% of local min to 200% of local max
+      // For 80ct jars with local benchmarks $21-$64: plausible = ~$10 - $128
+      const plausibleFloor = localMin * 0.5;
+      const plausibleCeiling = localMax * 2.0;
+
+      const excluded: string[] = [];
+      const filteredCompetitors = competitorData.competitors.filter(c => {
+        // Always keep local database prices (they're curated)
+        if (c.extractionMethod === 'local-competitor-database') return true;
+        // Remove web search prices outside plausible range for this pack size
+        if (c.price < plausibleFloor || c.price > plausibleCeiling) {
+          excluded.push(`${c.source}: $${c.price.toFixed(2)} (outside ${packSize}-pack range $${plausibleFloor.toFixed(0)}-$${plausibleCeiling.toFixed(0)})`);
+          return false;
         }
-        return c;
+        return true;
       });
-      competitorData = { ...competitorData, competitors: annotatedCompetitors };
-      onProgress?.(`Pack-size check: ${packInfoForSearch.packLabel} detected, annotated ${annotatedCompetitors.length} competitor prices`);
+
+      if (excluded.length > 0) {
+        onProgress?.(`Pack-size filter: removed ${excluded.length} price(s) outside ${packSize}-pack range: ${excluded.join(', ')}`);
+      }
+      competitorData = { ...competitorData, competitors: filteredCompetitors };
+      onProgress?.(`Pack-size check: ${packInfoForSearch.packLabel} detected, ${filteredCompetitors.length} plausible competitor prices`);
     }
 
     // Step 3: AI pricing analysis
