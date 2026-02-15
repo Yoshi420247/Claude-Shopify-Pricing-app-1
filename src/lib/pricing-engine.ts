@@ -982,10 +982,12 @@ Report whether each price is per-unit or per-pack in the title field.`;
     } // end if (!fast)
 
     // ========================================================================
-    // FINAL SANITY CHECK: Multi-pack price floor
+    // FINAL SANITY CHECKS — hard guardrails regardless of ai_unrestricted mode
+    // These catch AI hallucinations / garbage outputs, NOT strategy choices.
+    // Applied AFTER analysis so they override any bad AI output.
     // ========================================================================
-    // If the suggested price for a multi-pack is less than $2 per unit,
-    // it's almost certainly wrong (per-unit vs per-pack confusion leaked through).
+
+    // Check 1: Multi-pack price FLOOR (existing)
     if (packInfoForSearch.isMultiPack && analysis.suggestedPrice) {
       const perUnit = analysis.suggestedPrice / packInfoForSearch.packSize;
       const minPerUnit = 0.50; // Absolute floor: $0.50 per unit
@@ -996,10 +998,65 @@ Report whether each price is per-unit or per-pack in the title field.`;
         analysis.confidence = 'low';
         analysis.reasoning = [
           ...(analysis.reasoning || []),
-          `PACK-SIZE CORRECTION: Original price $${originalPrice.toFixed(2)} = $${perUnit.toFixed(2)}/unit for a ${packInfoForSearch.packSize}-pack is below minimum floor. Adjusted to $${correctedPrice.toFixed(2)} ($${minPerUnit.toFixed(2)}/unit minimum).`,
+          `PACK-SIZE CORRECTION (floor): Original price $${originalPrice.toFixed(2)} = $${perUnit.toFixed(2)}/unit for a ${packInfoForSearch.packSize}-pack is below minimum floor. Adjusted to $${correctedPrice.toFixed(2)} ($${minPerUnit.toFixed(2)}/unit minimum).`,
         ];
-        onProgress?.(`⚠️ Pack-size correction: $${originalPrice.toFixed(2)} → $${correctedPrice.toFixed(2)} (${packInfoForSearch.packLabel} floor)`);
+        onProgress?.(`⚠️ Pack-size floor: $${originalPrice.toFixed(2)} → $${correctedPrice.toFixed(2)} (${packInfoForSearch.packLabel})`);
       }
+    }
+
+    // Check 2: Multi-pack price CEILING — prevent AI from suggesting absurd per-unit prices
+    // For packaging products (jars, bags, tubes), per-unit retail rarely exceeds $5
+    if (packInfoForSearch.isMultiPack && analysis.suggestedPrice) {
+      const perUnit = analysis.suggestedPrice / packInfoForSearch.packSize;
+      const maxPerUnit = 5.00; // Ceiling: $5.00 per unit for bulk packaging
+      if (perUnit > maxPerUnit) {
+        const ceilingPrice = Math.round(packInfoForSearch.packSize * maxPerUnit * 100) / 100;
+        const originalPrice = analysis.suggestedPrice;
+        analysis.suggestedPrice = ceilingPrice;
+        analysis.confidence = 'low';
+        analysis.reasoning = [
+          ...(analysis.reasoning || []),
+          `PACK-SIZE CORRECTION (ceiling): Original price $${originalPrice.toFixed(2)} = $${perUnit.toFixed(2)}/unit for a ${packInfoForSearch.packSize}-pack exceeds $${maxPerUnit}/unit ceiling for bulk packaging. Adjusted to $${ceilingPrice.toFixed(2)}.`,
+        ];
+        onProgress?.(`⚠️ Pack-size ceiling: $${originalPrice.toFixed(2)} → $${ceilingPrice.toFixed(2)} ($${maxPerUnit}/unit max)`);
+      }
+    }
+
+    // Check 3: Competitor-based ceiling — never suggest more than 3x the highest competitor
+    // When we have competitor data, use it as an absolute ceiling anchor.
+    if (analysis.suggestedPrice && competitorData.competitors.length >= 2) {
+      const highestCompetitor = Math.max(...competitorData.competitors.map(c => c.price));
+      const competitorCeiling = highestCompetitor * 3;
+      if (analysis.suggestedPrice > competitorCeiling) {
+        const originalPrice = analysis.suggestedPrice;
+        // Clamp to 1.5x highest competitor — premium but not absurd
+        analysis.suggestedPrice = Math.round(highestCompetitor * 1.5 * 100) / 100;
+        analysis.confidence = 'low';
+        analysis.reasoning = [
+          ...(analysis.reasoning || []),
+          `SANITY CHECK (competitor ceiling): Original $${originalPrice.toFixed(2)} exceeded 3x highest competitor $${highestCompetitor.toFixed(2)}. Clamped to $${analysis.suggestedPrice.toFixed(2)} (1.5x highest).`,
+        ];
+        onProgress?.(`⚠️ Competitor ceiling: $${originalPrice.toFixed(2)} → $${analysis.suggestedPrice.toFixed(2)} (1.5x $${highestCompetitor.toFixed(2)})`);
+      }
+    }
+
+    // Check 4: Maximum price increase — catch wild outliers even with no competitor data
+    // A 5x price increase from the current price is almost certainly an AI hallucination.
+    const currentPrice = variant.price;
+    if (analysis.suggestedPrice && currentPrice > 0 && analysis.suggestedPrice > currentPrice * 5) {
+      const originalPrice = analysis.suggestedPrice;
+      // If we have competitor data, use median; otherwise cap at 3x current
+      const compMedian = competitorData.competitors.length > 0
+        ? competitorData.competitors.reduce((sum, c) => sum + c.price, 0) / competitorData.competitors.length
+        : currentPrice;
+      const cappedPrice = Math.round(Math.max(currentPrice * 3, compMedian * 1.2) * 100) / 100;
+      analysis.suggestedPrice = cappedPrice;
+      analysis.confidence = 'low';
+      analysis.reasoning = [
+        ...(analysis.reasoning || []),
+        `SANITY CHECK (max increase): Original $${originalPrice.toFixed(2)} was ${(originalPrice / currentPrice).toFixed(1)}x the current price $${currentPrice.toFixed(2)} — likely AI hallucination. Capped to $${cappedPrice.toFixed(2)}.`,
+      ];
+      onProgress?.(`⚠️ Max increase cap: $${originalPrice.toFixed(2)} → $${cappedPrice.toFixed(2)} (${(originalPrice / currentPrice).toFixed(0)}x increase blocked)`);
     }
 
     return {

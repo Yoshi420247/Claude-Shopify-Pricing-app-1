@@ -359,16 +359,18 @@ const WYN_COMPETITORS: VendorCompetitor[] = [
 
 const OIL_SLICK_PRICE_BENCHMARKS: KnownPriceBenchmark[] = [
   // === CHILD-RESISTANT GLASS JARS (10oz / 14g / 1/2 oz capacity) ===
-  { productPattern: /10\s*oz.*(?:child.?resistant|cr).*(?:glass\s*jar|jar)/i,
+  // Lookahead regex matches regardless of word order: "10oz Glass Jar with CR Lid"
+  // AND "10oz CR Glass Jar" both match
+  { productPattern: /10\s*oz(?=.*(?:child.?resistant|cr))(?=.*(?:glass\s*jar|jar))/i,
     competitorDomain: 'greenrushpackaging.com', competitorName: 'Green Rush Packaging', price: 30.64,
     category: 'Glass Jars', notes: '36ct case. White CR lid. Lowest price found.' },
-  { productPattern: /10\s*oz.*(?:child.?resistant|cr).*(?:glass\s*jar|jar)/i,
+  { productPattern: /10\s*oz(?=.*(?:child.?resistant|cr))(?=.*(?:glass\s*jar|jar))/i,
     competitorDomain: 'greatpacificpackaging.com', competitorName: 'Great Pacific Packaging', price: 35.50,
     category: 'Glass Jars', notes: '36/case. Matte black CR lid.' },
-  { productPattern: /10\s*oz.*(?:child.?resistant|cr).*(?:glass\s*jar|jar)/i,
+  { productPattern: /10\s*oz(?=.*(?:child.?resistant|cr))(?=.*(?:glass\s*jar|jar))/i,
     competitorDomain: 'thevialstore.com', competitorName: 'The Vial Store', price: 59.99,
     category: 'Glass Jars', notes: '36ct. Grade A pharmaceutical glass, black CR cap.' },
-  { productPattern: /10\s*oz.*(?:child.?resistant|cr).*(?:glass\s*jar|jar)/i,
+  { productPattern: /10\s*oz(?=.*(?:child.?resistant|cr))(?=.*(?:glass\s*jar|jar))/i,
     competitorDomain: 'greentechpackaging.com', competitorName: 'Green Tech Packaging', price: 77.04,
     category: 'Glass Jars', notes: '72ct ($154.08), normalized to 36ct equivalent.' },
   { productPattern: /10\s*oz.*(?:glass\s*jar|jar).*(?:straight|clear)/i,
@@ -391,10 +393,12 @@ const OIL_SLICK_PRICE_BENCHMARKS: KnownPriceBenchmark[] = [
     category: 'Glass Jars', notes: '7ml premium glass concentrate jars. Approx 80ct equivalent.' },
 
   // === CHILD-RESISTANT GLASS JARS (other sizes) ===
-  { productPattern: /(?:1|2|3|4|5)\s*oz.*(?:child.?resistant|cr).*(?:glass\s*jar|jar)/i,
+  // Lookahead regex matches regardless of word order: "5 oz Glass Jar with Black CR Lid"
+  // AND "5 oz CR Glass Jar" both match (jar and CR can appear in either order)
+  { productPattern: /(?:1|2|3|4|5)\s*oz(?=.*(?:child.?resistant|cr))(?=.*(?:glass\s*jar|jar))/i,
     competitorDomain: 'dragonchewer.com', competitorName: 'Dragon Chewer', price: 18.99,
     category: 'Glass Jars', notes: 'Small CR jars ~$15-25 per case. Supercell jar line.' },
-  { productPattern: /(?:1|2|3|4|5)\s*oz.*(?:child.?resistant|cr).*(?:glass\s*jar|jar)/i,
+  { productPattern: /(?:1|2|3|4|5)\s*oz(?=.*(?:child.?resistant|cr))(?=.*(?:glass\s*jar|jar))/i,
     competitorDomain: '420packaging.com', competitorName: '420 Packaging', price: 14.95,
     category: 'Glass Jars', notes: 'Small CR jars. Price-beat guarantee.' },
 
