@@ -31,6 +31,19 @@ export async function GET() {
   }
 }
 
+// Validation ranges for numeric settings
+const SETTINGS_RANGES: Record<string, { min: number; max: number }> = {
+  min_margin: { min: 0, max: 80 },
+  min_margin_dollars: { min: 0, max: 100 },
+  clearance_margin: { min: 0, max: 50 },
+  max_above: { min: 0, max: 50 },
+  max_increase: { min: 1, max: 100 },
+  max_decrease: { min: 1, max: 100 },
+  concurrency: { min: 1, max: 10 },
+};
+
+const VALID_ROUNDING_STYLES = ['psychological', 'clean', 'none'];
+
 export async function PUT(req: NextRequest) {
   try {
     const updates = await req.json();
@@ -42,12 +55,46 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'No settings row found' }, { status: 404 });
     }
 
-    // Filter to only known fields to avoid errors with missing columns
+    // Filter to only known fields and validate values
     const filteredUpdates: Record<string, unknown> = {};
+    const validationErrors: string[] = [];
+
     for (const key of Object.keys(updates)) {
-      if (KNOWN_FIELDS.includes(key)) {
-        filteredUpdates[key] = updates[key];
+      if (!KNOWN_FIELDS.includes(key)) continue;
+
+      const value = updates[key];
+
+      // Validate numeric ranges
+      if (key in SETTINGS_RANGES && typeof value === 'number') {
+        const range = SETTINGS_RANGES[key];
+        if (value < range.min || value > range.max) {
+          validationErrors.push(`${key} must be between ${range.min} and ${range.max}`);
+          continue;
+        }
       }
+
+      // Validate rounding_style enum
+      if (key === 'rounding_style' && typeof value === 'string') {
+        if (!VALID_ROUNDING_STYLES.includes(value)) {
+          validationErrors.push(`rounding_style must be one of: ${VALID_ROUNDING_STYLES.join(', ')}`);
+          continue;
+        }
+      }
+
+      // Validate boolean fields
+      if ((key === 'respect_msrp' || key === 'ai_unrestricted') && typeof value !== 'boolean') {
+        validationErrors.push(`${key} must be a boolean`);
+        continue;
+      }
+
+      filteredUpdates[key] = value;
+    }
+
+    if (validationErrors.length > 0) {
+      return NextResponse.json({
+        success: false,
+        error: `Validation failed: ${validationErrors.join('; ')}`,
+      }, { status: 400 });
     }
 
     // Try to save all fields first

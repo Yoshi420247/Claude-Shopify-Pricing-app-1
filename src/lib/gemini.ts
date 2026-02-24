@@ -12,26 +12,9 @@
 
 import { geminiRateLimiter } from './rate-limiter';
 import { parseAIJson } from './openai';
-import { getAllCompetitorDomains } from './local-competitor-data';
+import { RETAIL_SMOKE_SHOPS, isValidPrice, isKnownRetailer } from './constants';
 import type { ProductIdentity } from '@/types';
 import type { CompetitorPrice, CompetitorSearchResult } from './competitors';
-
-// PRIMARY price authority sites — search these FIRST, weight their prices highest
-const PRIMARY_PRICE_AUTHORITIES = [
-  'dragonchewer.com', 'marijuanapackaging.com', 'greentechpackaging.com',
-];
-
-// Known retail smoke shop domains — includes all curated competitor domains
-const RETAIL_SMOKE_SHOPS = [
-  'dragonchewer.com', 'marijuanapackaging.com', 'greentechpackaging.com',
-  'smokea.com', 'dankgeek.com', 'everythingfor420.com', 'grasscity.com',
-  'dailyhighclub.com', 'brotherswithglass.com', 'smokecartel.com',
-  'headshop.com', 'thickassglass.com', 'gogopipes.com', 'kings-pipe.com',
-  'tokeplanet.com', 'shopstaywild.com', 'paborito.com', 'stoners.com',
-  'badassglass.com', 'dankstop.com', 'hemper.co', 'ssmokeshop.com',
-  'worldofbongs.com', 'bongoutlet.com', 'aqualabtechnologies.com',
-  ...getAllCompetitorDomains(),
-];
 
 function getGeminiKey(): string {
   const key = process.env.GOOGLE_API_KEY;
@@ -589,5 +572,27 @@ Format your response as JSON:
     const msg = e instanceof Error ? e.message : 'Unknown error';
     console.error(`Gemini Amazon search failed for "${product.title}": ${msg}`);
     return { competitors: [], rawResults: [], excluded: [], queries: [`gemini-amazon-search-failed: ${product.title}`] };
+  }
+}
+
+// Test Gemini connection
+export async function testGeminiConnection(): Promise<{ success: boolean; error?: string }> {
+  try {
+    const key = getGeminiKey();
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${key}`,
+      { signal: AbortSignal.timeout(15000) },
+    );
+    if (res.ok) {
+      return { success: true };
+    }
+    const body = await res.text();
+    return { success: false, error: `HTTP ${res.status}: ${body.slice(0, 100)}` };
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : 'Unknown error';
+    if (message.includes('not configured')) {
+      return { success: false, error: 'GOOGLE_API_KEY not set (optional provider)' };
+    }
+    return { success: false, error: message };
   }
 }

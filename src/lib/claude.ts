@@ -3,26 +3,9 @@
 
 import { claudeRateLimiter } from './rate-limiter';
 import { parseAIJson } from './openai';
-import { getAllCompetitorDomains } from './local-competitor-data';
+import { RETAIL_SMOKE_SHOPS, isValidPrice, isKnownRetailer } from './constants';
 import type { ProductIdentity } from '@/types';
 import type { CompetitorPrice, CompetitorSearchResult } from './competitors';
-
-// PRIMARY price authority sites — search these FIRST, weight their prices highest
-const PRIMARY_PRICE_AUTHORITIES = [
-  'dragonchewer.com', 'marijuanapackaging.com', 'greentechpackaging.com',
-];
-
-// Known retail smoke shop domains — includes all curated competitor domains
-const RETAIL_SMOKE_SHOPS = [
-  'dragonchewer.com', 'marijuanapackaging.com', 'greentechpackaging.com',
-  'smokea.com', 'dankgeek.com', 'everythingfor420.com', 'grasscity.com',
-  'dailyhighclub.com', 'brotherswithglass.com', 'smokecartel.com',
-  'headshop.com', 'thickassglass.com', 'gogopipes.com', 'kings-pipe.com',
-  'tokeplanet.com', 'shopstaywild.com', 'paborito.com', 'stoners.com',
-  'badassglass.com', 'dankstop.com', 'hemper.co', 'ssmokeshop.com',
-  'worldofbongs.com', 'bongoutlet.com', 'aqualabtechnologies.com',
-  ...getAllCompetitorDomains(),
-];
 
 function getAnthropicKey(): string {
   const key = process.env.ANTHROPIC_API_KEY;
@@ -524,5 +507,37 @@ Return up to 8 listings if available. Only include prices between $1 and $2000.`
     const msg = e instanceof Error ? e.message : 'Unknown error';
     console.error(`Claude Amazon search failed for "${product.title}": ${msg}`);
     return { competitors: [], rawResults: [], excluded: [], queries: [`claude-amazon-search-failed: ${product.title}`] };
+  }
+}
+
+// Test Claude/Anthropic connection
+export async function testClaudeConnection(): Promise<{ success: boolean; error?: string }> {
+  try {
+    const key = getAnthropicKey();
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 10,
+        messages: [{ role: 'user', content: 'ping' }],
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (res.ok) {
+      return { success: true };
+    }
+    const body = await res.text();
+    return { success: false, error: `HTTP ${res.status}: ${body.slice(0, 100)}` };
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : 'Unknown error';
+    if (message.includes('not configured')) {
+      return { success: false, error: 'ANTHROPIC_API_KEY not set (optional provider)' };
+    }
+    return { success: false, error: message };
   }
 }

@@ -67,7 +67,10 @@ export default function Sidebar() {
       </div>
       <div className="p-4 border-t border-gray-700">
         <div className="text-xs text-gray-500">
-          Powered by GPT-5.2
+          Multi-AI Pricing Engine
+        </div>
+        <div className="text-xs text-gray-600 mt-0.5">
+          GPT-5.2 / Claude / Gemini
         </div>
       </div>
     </nav>

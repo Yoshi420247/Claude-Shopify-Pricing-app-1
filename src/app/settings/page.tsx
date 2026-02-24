@@ -14,6 +14,8 @@ export default function SettingsPage() {
     shopify: { success: boolean; error?: string };
     openai: { success: boolean; error?: string };
     brave: { success: boolean; error?: string };
+    claude?: { success: boolean; error?: string };
+    gemini?: { success: boolean; error?: string };
   } | null>(null);
 
   useEffect(() => {
@@ -145,11 +147,22 @@ export default function SettingsPage() {
             </button>
             {testResults && (
               <div className="space-y-2">
+                <p className="text-xs text-gray-500 font-medium uppercase tracking-wider mb-1">Core Services</p>
                 {(['shopify', 'openai', 'brave'] as const).map(key => {
                   const r = testResults[key];
                   return (
                     <p key={key} className={`text-sm ${r.success ? 'text-green-400' : 'text-red-400'}`}>
                       {r.success ? '✓' : '✗'} {key.charAt(0).toUpperCase() + key.slice(1)}: {r.success ? 'Connected' : r.error || 'Failed'}
+                    </p>
+                  );
+                })}
+                <p className="text-xs text-gray-500 font-medium uppercase tracking-wider mt-3 mb-1">Optional AI Providers</p>
+                {(['claude', 'gemini'] as const).map(key => {
+                  const r = testResults[key];
+                  if (!r) return null;
+                  return (
+                    <p key={key} className={`text-sm ${r.success ? 'text-green-400' : 'text-yellow-400'}`}>
+                      {r.success ? '✓' : '○'} {key.charAt(0).toUpperCase() + key.slice(1)}: {r.success ? 'Connected' : r.error || 'Not configured'}
                     </p>
                   );
                 })}

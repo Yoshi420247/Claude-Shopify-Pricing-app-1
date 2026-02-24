@@ -5,30 +5,14 @@ import { useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { useToast } from '@/components/Toast';
 import ProductModal from '@/components/ProductModal';
-import type { Product, Variant, Analysis, Settings } from '@/types';
+import type { Product, Variant, Analysis, Settings, BatchJobClient } from '@/types';
 
 interface VariantRow extends Variant {
   product: Product;
   analysis: Analysis | null;
 }
 
-interface BatchJob {
-  id: string;
-  name: string;
-  totalVariants: number;
-  chunkSize: number;
-  autoApply: boolean;
-  aiUnrestricted: boolean;
-  completed: number;
-  failed: number;
-  applied: number;
-  status: 'pending' | 'running' | 'paused' | 'completed' | 'cancelled';
-  currentChunk: number;
-  lastError: string | null;
-  createdAt: string;
-  startedAt: string | null;
-  completedAt: string | null;
-}
+type BatchJob = BatchJobClient;
 
 const defaultSettings: Partial<Settings> = {
   min_margin: 20,
