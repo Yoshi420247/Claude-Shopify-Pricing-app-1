@@ -45,7 +45,7 @@ import { runVolumeAwareAnalysis, saveAnalysis, type SearchMode, type Provider } 
 import { runFullAnalysis } from '@/lib/pricing-engine';
 import { updateVariantPrice } from '@/lib/shopify';
 import { detectQuantityVariantGroups } from '@/lib/volume-pricing';
-import { getBatchCostTracker, resetBatchCostTracker, CostTracker } from '@/lib/cost-tracker';
+import { getBatchCostTracker, resetBatchCostTracker } from '@/lib/cost-tracker';
 import { getRoutingSummary, type RouterOptions } from '@/lib/model-router';
 import type { Product, Variant, Settings } from '@/types';
 import * as fs from 'fs';

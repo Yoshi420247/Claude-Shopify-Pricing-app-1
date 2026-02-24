@@ -17,7 +17,7 @@ import {
   isOilSlickVendor,
   isWYNVendor,
 } from './local-competitor-data';
-import { getModelForStep, getSearchMode as getRouterSearchMode, type RouterOptions, type PipelineStep } from './model-router';
+import { getModelForStep, type RouterOptions, type PipelineStep } from './model-router';
 import { CostTracker, estimateMessageTokens, estimateTokens } from './cost-tracker';
 
 export type SearchMode = 'brave' | 'openai' | 'amazon' | 'none' | 'gemini';
@@ -862,41 +862,27 @@ export async function runFullAnalysis(
       identityCache.set(product.id, identity);
     }
 
-    // Step 1b: Visual analysis with Gemini 2.5 Flash (if image available)
-    // This runs in parallel-ish with search — adds ~$0.003 per product but
-    // significantly improves quality tier detection and pricing accuracy.
+    // Step 1b + Step 2: Visual analysis AND search run in PARALLEL
+    // Visual analysis uses Gemini 2.5 Flash (~2-4s), search uses Gemini Google Search (~5-15s)
+    // Running them concurrently saves ~2-4 seconds per product.
     let visualAnalysis: VisualAnalysisResult | null = null;
+    let competitorData: CompetitorSearchResult;
+
+    // Start visual analysis in background (non-blocking)
+    const visualPromise = product.image_url
+      ? analyzeProductImage(
+          product.image_url,
+          product.title,
+          product.product_type,
+          product.vendor,
+        ).catch(() => null)  // Never fail the pipeline over a visual analysis error
+      : Promise.resolve(null);
+
     if (product.image_url) {
-      onProgress?.('Analyzing product image (Gemini 2.5 Flash)...');
-      visualAnalysis = await analyzeProductImage(
-        product.image_url,
-        product.title,
-        product.product_type,
-        product.vendor,
-      );
-
-      if (visualAnalysis) {
-        // Track visual analysis cost
-        costTracker.add({
-          step: 'visual',
-          provider: 'gemini',
-          model: 'gemini-2.5-flash',
-          estimatedInputTokens: 1200,  // prompt + image (~765 tokens)
-          estimatedOutputTokens: 600,
-        });
-
-        // If visual analysis disagrees with text-based identity on quality tier,
-        // log it and let the pricing AI resolve the conflict
-        if (visualAnalysis.qualityTier !== 'unknown' &&
-            visualAnalysis.qualityTier !== identity.originTier) {
-          onProgress?.(`Visual analysis suggests ${visualAnalysis.qualityTier.toUpperCase()} (text says ${identity.originTier.toUpperCase()}) — AI will resolve`);
-        }
-      }
+      onProgress?.('Analyzing product image (Gemini 2.5 Flash) + searching competitors in parallel...');
     }
 
-    // Step 2: Search competitors
     // 2a: Check local competitor database FIRST (curated vendor-tagged data)
-    let competitorData: CompetitorSearchResult;
     const productSearch = { title: product.title, vendor: product.vendor, productType: product.product_type };
     const localBenchmarks = getKnownPriceBenchmarks(productSearch, identity);
     const hasLocalData = localBenchmarks.length > 0;
@@ -936,14 +922,11 @@ Report whether each price is per-unit or per-pack in the title field.`;
         onProgress?.('Searching Amazon (Claude web search)...');
         competitorData = await searchCompetitorsClaudeAmazon(productSearch, identity, prioritySearchInstruction);
         searchProvider = 'claude';
-      } else if (provider === 'gemini' || searchMode === 'amazon') {
+      } else {
+        // Default Amazon search uses Gemini Google Search (cheapest)
         onProgress?.('Searching Amazon (Gemini Google Search)...');
         competitorData = await searchCompetitorsGeminiAmazon(productSearch, identity, prioritySearchInstruction);
         searchProvider = 'gemini';
-      } else {
-        onProgress?.('Searching Amazon (OpenAI web search)...');
-        competitorData = await searchCompetitorsAmazon(productSearch, identity, prioritySearchInstruction);
-        searchProvider = 'openai';
       }
     } else if (searchMode === 'brave') {
       onProgress?.('Searching competitors (Brave)...');
@@ -990,6 +973,23 @@ Report whether each price is per-unit or per-pack in the title field.`;
         searchCalls: 1,
         searchType,
       });
+    }
+
+    // Await visual analysis (was running in parallel with search)
+    visualAnalysis = await visualPromise;
+    if (visualAnalysis) {
+      costTracker.add({
+        step: 'visual',
+        provider: 'gemini',
+        model: 'gemini-2.5-flash',
+        estimatedInputTokens: 1200,  // prompt + image (~765 tokens)
+        estimatedOutputTokens: 600,
+      });
+
+      if (visualAnalysis.qualityTier !== 'unknown' &&
+          visualAnalysis.qualityTier !== identity.originTier) {
+        onProgress?.(`Visual analysis: ${visualAnalysis.qualityTier.toUpperCase()} (text said ${identity.originTier.toUpperCase()}) — AI will resolve`);
+      }
     }
 
     // 2c: Merge local benchmarks INTO competitor data (prepend — highest confidence)
