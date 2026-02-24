@@ -923,19 +923,59 @@ async function main() {
   }
 
   // Connect to Supabase
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const db = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    supabaseUrl,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
   );
 
-  // Load settings
-  const { data: settingsRow, error: settingsErr } = await db
-    .from('settings')
-    .select('*')
-    .single();
+  // Pre-flight connectivity check with retry
+  // Supabase free-tier projects can be paused and need time to wake up
+  log(`Connecting to Supabase (${supabaseUrl.replace(/https?:\/\//, '').split('.')[0]})...`);
 
-  if (settingsErr) {
-    logError(`Failed to load settings: ${settingsErr.message}`);
+  let settingsRow = null;
+  let settingsErr = null;
+  const MAX_CONNECT_RETRIES = 4;
+  for (let attempt = 0; attempt <= MAX_CONNECT_RETRIES; attempt++) {
+    if (attempt > 0) {
+      const backoffMs = Math.min(2000 * Math.pow(2, attempt - 1), 16000);
+      logWarn(`Connection failed, retrying in ${backoffMs / 1000}s (attempt ${attempt + 1}/${MAX_CONNECT_RETRIES + 1})...`);
+      await sleep(backoffMs);
+    }
+
+    const result = await db
+      .from('settings')
+      .select('*')
+      .single();
+
+    settingsRow = result.data;
+    settingsErr = result.error;
+
+    if (!settingsErr) {
+      log('Supabase connection: OK');
+      break;
+    }
+
+    // If error is not network-related, don't retry
+    const errMsg = settingsErr.message || '';
+    if (!errMsg.includes('fetch failed') && !errMsg.includes('ETIMEDOUT') && !errMsg.includes('ECONNREFUSED') && !errMsg.includes('ENOTFOUND')) {
+      break;
+    }
+  }
+
+  if (settingsErr || !settingsRow) {
+    logError(`Failed to load settings: ${settingsErr?.message || 'No data returned'}`);
+    if (settingsErr?.message?.includes('fetch failed')) {
+      logError('');
+      logError('This usually means one of:');
+      logError('  1. Your Supabase project is PAUSED (free-tier auto-pauses after inactivity)');
+      logError('     → Go to https://supabase.com/dashboard and unpause your project');
+      logError('  2. NEXT_PUBLIC_SUPABASE_URL secret is wrong or expired');
+      logError('  3. SUPABASE_SERVICE_ROLE_KEY secret is wrong or expired');
+      logError('  4. Network connectivity issue from GitHub Actions runner');
+      logError('');
+      logError(`  Supabase URL: ${supabaseUrl}`);
+    }
     process.exit(1);
   }
 
@@ -953,6 +993,29 @@ async function main() {
     log('WARNING: Volume pricing columns (pricing_method, volume_pricing) not found.');
     log('WARNING: Please apply migration 006_add_volume_pricing.sql to your Supabase database.');
     log('WARNING: Analysis will still be saved, but without volume pricing metadata.');
+  }
+
+  // Pre-flight: check Shopify connectivity (only if we'll be applying prices)
+  if (!opts.dryRun && !opts.skipApply && !opts.markup) {
+    const shopifyStore = process.env.SHOPIFY_STORE_NAME;
+    log(`Checking Shopify connectivity (${shopifyStore})...`);
+    try {
+      const shopifyResp = await fetch(
+        `https://${shopifyStore}.myshopify.com/admin/api/2024-01/shop.json`,
+        { headers: { 'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN! } },
+      );
+      if (shopifyResp.ok) {
+        log('Shopify connection: OK');
+      } else {
+        const body = await shopifyResp.text().catch(() => '');
+        logWarn(`Shopify returned ${shopifyResp.status}: ${body.slice(0, 200)}`);
+        logWarn('Price updates may fail. Continuing with analysis...');
+      }
+    } catch (shopifyErr) {
+      const msg = shopifyErr instanceof Error ? shopifyErr.message : String(shopifyErr);
+      logWarn(`Shopify connectivity check failed: ${msg}`);
+      logWarn('Price updates may fail. Continuing with analysis...');
+    }
   }
 
   // ---------------------------------------------------------------------------
