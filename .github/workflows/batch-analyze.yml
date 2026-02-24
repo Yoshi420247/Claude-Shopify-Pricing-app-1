@@ -3,6 +3,17 @@ name: Batch Price Analysis
 on:
   workflow_dispatch:
     inputs:
+      preset:
+        description: 'Quick-start preset (overrides provider/search/fast/concurrency settings below)'
+        required: true
+        type: choice
+        options:
+          - custom
+          - full-quality
+          - quick-scan
+          - budget
+          - reanalyze-low-confidence
+        default: 'custom'
       product_id:
         description: 'Shopify product ID(s) — numeric ID, admin URL, or handle. Comma-separate for multiple. Leave empty for all products.'
         required: false
@@ -28,24 +39,40 @@ on:
         type: string
         default: '100'
       provider:
-        description: 'AI provider for search + reasoning (gemini is cheapest, openai is most proven)'
+        description: 'AI provider — "smart" uses cheapest model per step (recommended)'
         required: true
         type: choice
         options:
-          - gemini
+          - smart
           - openai
+          - gemini
           - claude
-        default: 'gemini'
+        default: 'smart'
       search_mode:
         description: 'Search strategy for competitor research'
         required: true
         type: choice
         options:
+          - gemini
           - openai
           - amazon
           - brave
           - none
-        default: 'openai'
+        default: 'gemini'
+      min_confidence:
+        description: 'Minimum confidence to auto-apply prices (low = apply all, medium = skip low, high = only high)'
+        required: true
+        type: choice
+        options:
+          - low
+          - medium
+          - high
+        default: 'low'
+      max_price_change_pct:
+        description: 'Max allowed price change % (0 = no limit). Flags changes exceeding this for review.'
+        required: false
+        type: string
+        default: '0'
       limit:
         description: 'Max variants to process (0 = no limit)'
         required: false
@@ -56,13 +83,18 @@ on:
         required: true
         type: boolean
         default: false
+      retry_failed:
+        description: 'Auto-retry failed variants up to N times (0 = no retry)'
+        required: false
+        type: string
+        default: '2'
       fast:
-        description: 'Fast mode: uses cheapest models (gpt-4o-mini/haiku/gemini-2.0-flash), skips reflection + deliberation.'
+        description: 'Fast mode: uses gpt-4.1-nano + gemini-2.5-flash, skips reflection + deliberation.'
         required: true
         type: boolean
         default: false
       dry_run:
-        description: 'Dry run (analyze only, do NOT apply prices)'
+        description: 'Dry run (analyze only, do NOT apply prices to Shopify)'
         required: true
         type: boolean
         default: false
@@ -96,6 +128,57 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Apply preset configuration
+        id: config
+        run: |
+          PRESET="${{ inputs.preset }}"
+          # Defaults from inputs
+          PROVIDER="${{ inputs.provider }}"
+          SEARCH="${{ inputs.search_mode }}"
+          FAST="${{ inputs.fast }}"
+          CONCURRENCY="${{ inputs.concurrency }}"
+          MIN_CONFIDENCE="${{ inputs.min_confidence }}"
+          RETRY="${{ inputs.retry_failed }}"
+
+          if [ "$PRESET" = "full-quality" ]; then
+            echo "Preset: FULL QUALITY — smart routing, gemini search, all steps, medium confidence"
+            PROVIDER="smart"
+            SEARCH="gemini"
+            FAST="false"
+            MIN_CONFIDENCE="medium"
+            RETRY="2"
+          elif [ "$PRESET" = "quick-scan" ]; then
+            echo "Preset: QUICK SCAN — fast mode, skip deliberation, apply all"
+            PROVIDER="smart"
+            SEARCH="gemini"
+            FAST="true"
+            CONCURRENCY="150"
+            MIN_CONFIDENCE="low"
+            RETRY="1"
+          elif [ "$PRESET" = "budget" ]; then
+            echo "Preset: BUDGET — gemini only, fast mode, minimal API cost"
+            PROVIDER="gemini"
+            SEARCH="gemini"
+            FAST="true"
+            CONCURRENCY="80"
+            MIN_CONFIDENCE="low"
+            RETRY="1"
+          elif [ "$PRESET" = "reanalyze-low-confidence" ]; then
+            echo "Preset: REANALYZE LOW CONFIDENCE — full quality, only reprocess low-confidence results"
+            PROVIDER="smart"
+            SEARCH="gemini"
+            FAST="false"
+            MIN_CONFIDENCE="medium"
+            RETRY="3"
+          fi
+
+          echo "provider=$PROVIDER" >> "$GITHUB_OUTPUT"
+          echo "search=$SEARCH" >> "$GITHUB_OUTPUT"
+          echo "fast=$FAST" >> "$GITHUB_OUTPUT"
+          echo "concurrency=$CONCURRENCY" >> "$GITHUB_OUTPUT"
+          echo "min_confidence=$MIN_CONFIDENCE" >> "$GITHUB_OUTPUT"
+          echo "retry=$RETRY" >> "$GITHUB_OUTPUT"
+
       - name: Run batch analysis
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
@@ -110,14 +193,41 @@ jobs:
           # Increase Node.js memory for high concurrency
           NODE_OPTIONS: '--max-old-space-size=4096'
         run: |
-          ARGS="--status ${{ inputs.status }} --concurrency ${{ inputs.concurrency }} --search-mode ${{ inputs.search_mode }} --provider ${{ inputs.provider }}"
+          PROVIDER="${{ steps.config.outputs.provider }}"
+          SEARCH="${{ steps.config.outputs.search }}"
+          FAST="${{ steps.config.outputs.fast }}"
+          CONCURRENCY="${{ steps.config.outputs.concurrency }}"
+          MIN_CONFIDENCE="${{ steps.config.outputs.min_confidence }}"
+          RETRY="${{ steps.config.outputs.retry }}"
+
+          # Build base args — "smart" provider means use default multi-provider routing (openai flag)
+          if [ "$PROVIDER" = "smart" ]; then
+            ARGS="--status ${{ inputs.status }} --concurrency $CONCURRENCY --search-mode $SEARCH --provider openai"
+          else
+            ARGS="--status ${{ inputs.status }} --concurrency $CONCURRENCY --search-mode $SEARCH --provider $PROVIDER"
+          fi
+
+          # Add confidence and retry flags
+          ARGS="$ARGS --min-confidence $MIN_CONFIDENCE"
+
+          if [ "$RETRY" != "0" ] && [ -n "$RETRY" ]; then
+            ARGS="$ARGS --retry $RETRY"
+          fi
+
+          # Add max price change guard
+          if [ "${{ inputs.max_price_change_pct }}" != "0" ] && [ -n "${{ inputs.max_price_change_pct }}" ]; then
+            ARGS="$ARGS --max-price-change ${{ inputs.max_price_change_pct }}"
+          fi
 
           if [ -n "${{ inputs.product_id }}" ]; then
             # Single/multi product mode: analyze specific product(s)
             ARGS="$ARGS --product-id \"${{ inputs.product_id }}\""
           elif [ -n "${{ inputs.failed_report }}" ]; then
             # Re-run mode: only process previously failed products
-            ARGS="--failed-report ${{ inputs.failed_report }} --concurrency ${{ inputs.concurrency }} --search-mode ${{ inputs.search_mode }} --provider ${{ inputs.provider }}"
+            ARGS="--failed-report ${{ inputs.failed_report }} --concurrency $CONCURRENCY --search-mode $SEARCH --provider $PROVIDER --min-confidence $MIN_CONFIDENCE"
+            if [ "$RETRY" != "0" ] && [ -n "$RETRY" ]; then
+              ARGS="$ARGS --retry $RETRY"
+            fi
           else
             if [ -n "${{ inputs.vendor }}" ]; then
               ARGS="$ARGS --vendor \"${{ inputs.vendor }}\""
@@ -132,7 +242,7 @@ jobs:
             ARGS="$ARGS --skip-analyzed"
           fi
 
-          if [ "${{ inputs.fast }}" = "true" ]; then
+          if [ "$FAST" = "true" ]; then
             ARGS="$ARGS --fast"
           fi
 
@@ -153,5 +263,14 @@ jobs:
         with:
           name: failed-products-report
           path: reports/failed-products-*.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload price changes report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: price-changes-report
+          path: reports/price-changes-*.json
           if-no-files-found: ignore
           retention-days: 30

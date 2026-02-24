@@ -7,6 +7,14 @@
 // (lowest qty) variant is AI-analyzed. All other quantity variants get their
 // prices derived via the power-law volume discount formula.
 //
+// IMPROVEMENTS (v2):
+//   - Auto-retry failed variants (--retry N) with exponential backoff
+//   - Confidence-based filtering (--min-confidence low|medium|high)
+//   - Price change sanity checks (--max-price-change N%)
+//   - Before/after price change report saved to reports/
+//   - ETA calculation in progress reporting
+//   - Transient error detection with smart retry vs skip
+//
 // Usage:
 //   npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts \
 //     --vendor "Artist Name" --status active --concurrency 100
@@ -33,6 +41,14 @@
 //
 // Skip already-analyzed products (only process new/unanalyzed):
 //   npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts --skip-analyzed
+//
+// Only apply prices with medium+ confidence, retry failures 3 times:
+//   npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts \
+//     --min-confidence medium --retry 3
+//
+// Flag price changes over 50% for review (dry-run mode):
+//   npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts \
+//     --max-price-change 50 --dry-run
 //
 // Environment variables required:
 //   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
@@ -61,7 +77,24 @@ interface FailedProduct {
   variantTitle: string;
   error: string;
   timestamp: string;
+  retryCount: number;
 }
+
+interface PriceChange {
+  productId: string;
+  variantId: string;
+  productTitle: string;
+  variantTitle: string;
+  previousPrice: number;
+  newPrice: number;
+  changePct: number;
+  confidence: string;
+  pricingMethod: 'ai' | 'volume_formula' | 'markup';
+  flagged: boolean;
+  flagReason: string | null;
+}
+
+type Confidence = 'low' | 'medium' | 'high';
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
@@ -80,6 +113,9 @@ function parseArgs(): {
   failedReport: string | null;
   markup: number | null;
   productIds: string[] | null;
+  minConfidence: Confidence;
+  maxRetries: number;
+  maxPriceChangePct: number;
 } {
   const args = process.argv.slice(2);
   const get = (flag: string): string | null => {
@@ -105,6 +141,18 @@ function parseArgs(): {
   const rawProductId = get('--product-id');
   const productIds = rawProductId ? parseProductIdArg(rawProductId) : null;
 
+  // Parse --min-confidence
+  const rawConfidence = get('--min-confidence') || 'low';
+  const minConfidence: Confidence = rawConfidence === 'high' ? 'high' : rawConfidence === 'medium' ? 'medium' : 'low';
+
+  // Parse --retry (max retries for transient failures)
+  const rawRetries = get('--retry') || '0';
+  const maxRetries = Math.max(0, Math.min(5, parseInt(rawRetries, 10) || 0));
+
+  // Parse --max-price-change (percentage)
+  const rawMaxChange = get('--max-price-change') || '0';
+  const maxPriceChangePct = Math.max(0, parseFloat(rawMaxChange) || 0);
+
   return {
     vendor: get('--vendor'),
     status: get('--status') || 'active',
@@ -119,6 +167,9 @@ function parseArgs(): {
     failedReport: get('--failed-report'),
     markup,
     productIds,
+    minConfidence,
+    maxRetries,
+    maxPriceChangePct,
   };
 }
 
@@ -151,22 +202,77 @@ function log(msg: string) {
   console.log(`[${ts}] ${msg}`);
 }
 
+function logWarn(msg: string) {
+  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  console.warn(`[${ts}] WARN: ${msg}`);
+}
+
 function logError(msg: string) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   console.error(`[${ts}] ERROR: ${msg}`);
 }
 
-function logProgress(done: number, total: number, failed: number, applied: number, activeWorkers: number) {
+function logProgress(done: number, total: number, failed: number, applied: number, skippedConfidence: number, flaggedChanges: number, activeWorkers: number) {
   const pct = ((done / total) * 100).toFixed(1);
   const elapsed = ((Date.now() - globalStartTime) / 1000 / 60).toFixed(1);
   const rate = done > 0 ? (done / ((Date.now() - globalStartTime) / 1000 / 60)).toFixed(1) : '0';
-  console.log(`\n${'='.repeat(70)}`);
+  // ETA calculation
+  const ratePerSec = done > 0 ? done / ((Date.now() - globalStartTime) / 1000) : 0;
+  const remaining = total - done;
+  const etaMin = ratePerSec > 0 ? (remaining / ratePerSec / 60).toFixed(1) : '?';
+  // Running cost estimate
+  const costSoFar = getBatchCostTracker().getSummary().totalCost;
+  console.log(`\n${'='.repeat(78)}`);
   console.log(`  Progress: ${done}/${total} (${pct}%) | Failed: ${failed} | Applied: ${applied}`);
-  console.log(`  Workers: ${activeWorkers} active | Rate: ${rate} products/min | Elapsed: ${elapsed}min`);
-  console.log(`${'='.repeat(70)}\n`);
+  console.log(`  Workers: ${activeWorkers} active | Rate: ${rate}/min | Elapsed: ${elapsed}min | ETA: ${etaMin}min`);
+  if (skippedConfidence > 0 || flaggedChanges > 0) {
+    console.log(`  Skipped (low conf): ${skippedConfidence} | Flagged (large change): ${flaggedChanges}`);
+  }
+  console.log(`  Running cost: $${costSoFar.toFixed(4)}`);
+  console.log(`${'='.repeat(78)}\n`);
 }
 
 let globalStartTime = Date.now();
+
+// ---------------------------------------------------------------------------
+// Confidence level comparison
+// ---------------------------------------------------------------------------
+const CONFIDENCE_RANK: Record<string, number> = { low: 1, medium: 2, high: 3 };
+
+function meetsConfidenceThreshold(confidence: string | undefined, minConfidence: Confidence): boolean {
+  const rank = CONFIDENCE_RANK[confidence || 'low'] || 0;
+  const minRank = CONFIDENCE_RANK[minConfidence] || 1;
+  return rank >= minRank;
+}
+
+// ---------------------------------------------------------------------------
+// Transient error detection — these are worth retrying
+// ---------------------------------------------------------------------------
+const TRANSIENT_PATTERNS = [
+  'timeout',
+  'ETIMEDOUT',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'socket hang up',
+  'network error',
+  'fetch failed',
+  '429',         // rate limit
+  'too many requests',
+  'rate limit',
+  'service unavailable',
+  '503',
+  '502',
+  'bad gateway',
+  'internal server error',
+  '500',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+];
+
+function isTransient(error: string): boolean {
+  const lower = error.toLowerCase();
+  return TRANSIENT_PATTERNS.some(p => lower.includes(p.toLowerCase()));
+}
 
 // ---------------------------------------------------------------------------
 // Fatal error patterns — stop the entire batch
@@ -186,6 +292,39 @@ function isFatal(error: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Price change sanity check
+// ---------------------------------------------------------------------------
+function checkPriceChange(
+  previousPrice: number,
+  newPrice: number,
+  maxChangePct: number,
+): { flagged: boolean; changePct: number; reason: string | null } {
+  if (previousPrice <= 0 || !maxChangePct) {
+    return { flagged: false, changePct: 0, reason: null };
+  }
+
+  const changePct = Math.abs((newPrice - previousPrice) / previousPrice) * 100;
+
+  if (changePct > maxChangePct) {
+    const direction = newPrice > previousPrice ? 'increase' : 'decrease';
+    return {
+      flagged: true,
+      changePct,
+      reason: `Price ${direction} of ${changePct.toFixed(1)}% exceeds ${maxChangePct}% threshold ($${previousPrice.toFixed(2)} → $${newPrice.toFixed(2)})`,
+    };
+  }
+
+  return { flagged: false, changePct, reason: null };
+}
+
+// ---------------------------------------------------------------------------
+// Sleep helper for retry backoff
+// ---------------------------------------------------------------------------
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ---------------------------------------------------------------------------
 // Process a product using volume-aware analysis
 // For products with quantity variants: AI-analyze only the base (lowest qty)
 // variant, then derive all other quantity variant prices formulaically.
@@ -197,9 +336,12 @@ async function processProductVolumeAware(
   variantsToProcess: Variant[],
   settings: Settings,
   db: ReturnType<typeof createClient>,
-  opts: { dryRun: boolean; skipApply: boolean; searchMode: SearchMode; provider: Provider; fast: boolean },
-): Promise<{ results: Array<{ variantId: string; success: boolean; applied: boolean; price: number | null; error: string | null; pricingMethod: 'ai' | 'volume_formula' }> }> {
-  const results: Array<{ variantId: string; success: boolean; applied: boolean; price: number | null; error: string | null; pricingMethod: 'ai' | 'volume_formula' }> = [];
+  opts: {
+    dryRun: boolean; skipApply: boolean; searchMode: SearchMode; provider: Provider; fast: boolean;
+    minConfidence: Confidence; maxRetries: number; maxPriceChangePct: number;
+  },
+): Promise<{ results: Array<{ variantId: string; success: boolean; applied: boolean; price: number | null; error: string | null; pricingMethod: 'ai' | 'volume_formula'; confidence: string; flagged: boolean; flagReason: string | null; previousPrice: number }> }> {
+  const results: Array<{ variantId: string; success: boolean; applied: boolean; price: number | null; error: string | null; pricingMethod: 'ai' | 'volume_formula'; confidence: string; flagged: boolean; flagReason: string | null; previousPrice: number }> = [];
 
   // Detect quantity variant groups for this product
   const qtyGroups = detectQuantityVariantGroups(productVariants);
@@ -241,7 +383,7 @@ async function processProductVolumeAware(
           processedIds.add(r.variantId);
 
           if (r.analysisResult.error) {
-            results.push({ variantId: r.variantId, success: false, applied: false, price: null, error: r.analysisResult.error, pricingMethod: r.volumeMeta.pricing_method });
+            results.push({ variantId: r.variantId, success: false, applied: false, price: null, error: r.analysisResult.error, pricingMethod: r.volumeMeta.pricing_method, confidence: 'low', flagged: false, flagReason: null, previousPrice: 0 });
             continue;
           }
 
@@ -251,31 +393,54 @@ async function processProductVolumeAware(
           const price = r.analysisResult.suggestedPrice;
           const variant = productVariants.find(v => v.id === r.variantId);
           const method = r.volumeMeta.pricing_method;
+          const confidence = r.analysisResult.confidence || 'medium';
+          const prevPrice = variant?.price || 0;
 
-          log(`  ${method === 'ai' ? 'AI' : 'FORMULA'}: ${variant?.title || 'Default'} → $${price?.toFixed(2) || 'none'}`);
+          log(`  ${method === 'ai' ? 'AI' : 'FORMULA'}: ${variant?.title || 'Default'} → $${price?.toFixed(2) || 'none'} (conf: ${confidence})`);
 
-          // Auto-apply
-          if (price && price > 0 && !opts.dryRun && !opts.skipApply) {
+          // Confidence check
+          if (!meetsConfidenceThreshold(confidence, opts.minConfidence)) {
+            logWarn(`  Skipping apply — confidence "${confidence}" below minimum "${opts.minConfidence}"`);
+            results.push({ variantId: r.variantId, success: true, applied: false, price, error: null, pricingMethod: method, confidence, flagged: false, flagReason: `Below min confidence: ${confidence} < ${opts.minConfidence}`, previousPrice: prevPrice });
+            continue;
+          }
+
+          // Price change sanity check
+          let flagged = false;
+          let flagReason: string | null = null;
+          if (price && prevPrice > 0) {
+            const check = checkPriceChange(prevPrice, price, opts.maxPriceChangePct);
+            flagged = check.flagged;
+            flagReason = check.reason;
+            if (flagged) {
+              logWarn(`  FLAGGED: ${flagReason}`);
+            }
+          }
+
+          // Auto-apply (skip if flagged and not dry-run — let user review)
+          if (price && price > 0 && !opts.dryRun && !opts.skipApply && !flagged) {
             try {
               await updateVariantPrice(r.variantId, price);
               await db.from('variants').update({ price }).eq('id', r.variantId);
               await db
                 .from('analyses')
-                .update({ applied: true, applied_at: new Date().toISOString(), previous_price: variant?.price || 0 })
+                .update({ applied: true, applied_at: new Date().toISOString(), previous_price: prevPrice })
                 .match({ product_id: r.productId, variant_id: r.variantId });
 
-              log(`  APPLIED (${r.variantId}): $${variant?.price.toFixed(2)} -> $${price.toFixed(2)}`);
-              results.push({ variantId: r.variantId, success: true, applied: true, price, error: null, pricingMethod: method });
+              log(`  APPLIED (${r.variantId}): $${prevPrice.toFixed(2)} -> $${price.toFixed(2)}`);
+              results.push({ variantId: r.variantId, success: true, applied: true, price, error: null, pricingMethod: method, confidence, flagged, flagReason, previousPrice: prevPrice });
             } catch (applyErr) {
               const msg = applyErr instanceof Error ? applyErr.message : 'Apply failed';
               logError(`  Apply failed: ${msg}`);
-              results.push({ variantId: r.variantId, success: true, applied: false, price, error: `Apply failed: ${msg}`, pricingMethod: method });
+              results.push({ variantId: r.variantId, success: true, applied: false, price, error: `Apply failed: ${msg}`, pricingMethod: method, confidence, flagged, flagReason, previousPrice: prevPrice });
             }
           } else {
             if (opts.dryRun) {
-              log(`  DRY RUN: Would apply $${price?.toFixed(2)}`);
+              log(`  DRY RUN: Would apply $${price?.toFixed(2)}${flagged ? ' (FLAGGED — would skip)' : ''}`);
+            } else if (flagged) {
+              log(`  HELD: Price flagged for review, not applied`);
             }
-            results.push({ variantId: r.variantId, success: true, applied: false, price, error: null, pricingMethod: method });
+            results.push({ variantId: r.variantId, success: true, applied: false, price, error: null, pricingMethod: method, confidence, flagged, flagReason, previousPrice: prevPrice });
           }
         }
       } catch (e) {
@@ -285,7 +450,7 @@ async function processProductVolumeAware(
         for (const qv of group.variants) {
           if (variantsToProcess.some(v => v.id === qv.variant.id) && !processedIds.has(qv.variant.id)) {
             processedIds.add(qv.variant.id);
-            results.push({ variantId: qv.variant.id, success: false, applied: false, price: null, error: msg, pricingMethod: 'ai' });
+            results.push({ variantId: qv.variant.id, success: false, applied: false, price: null, error: msg, pricingMethod: 'ai', confidence: 'low', flagged: false, flagReason: null, previousPrice: qv.variant.price || 0 });
           }
         }
       }
@@ -309,81 +474,133 @@ async function processProductVolumeAware(
 }
 
 // ---------------------------------------------------------------------------
-// Process a single variant (non-volume, original behavior)
+// Process a single variant with retry logic
 // ---------------------------------------------------------------------------
 async function processSingleVariant(
   product: Product,
   variant: Variant,
   settings: Settings,
   db: ReturnType<typeof createClient>,
-  opts: { dryRun: boolean; skipApply: boolean; searchMode: SearchMode; provider: Provider; fast: boolean },
-): Promise<{ variantId: string; success: boolean; applied: boolean; price: number | null; error: string | null }> {
+  opts: {
+    dryRun: boolean; skipApply: boolean; searchMode: SearchMode; provider: Provider; fast: boolean;
+    minConfidence: Confidence; maxRetries: number; maxPriceChangePct: number;
+  },
+): Promise<{ variantId: string; success: boolean; applied: boolean; price: number | null; error: string | null; confidence: string; flagged: boolean; flagReason: string | null; previousPrice: number }> {
   const label = `${product.title} / ${variant.title || 'Default'} (${variant.id})`;
+  const prevPrice = variant.price || 0;
+  let lastError = '';
 
-  try {
-    log(`Analyzing: ${label}`);
-    const result = await runFullAnalysis(product, variant, settings, (step) => {
-      log(`  ${step}`);
-    }, opts.searchMode, opts.provider, opts.fast);
+  for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
+    if (attempt > 0) {
+      const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 16000);
+      log(`  Retry ${attempt}/${opts.maxRetries} for ${label} (waiting ${backoffMs}ms)`);
+      await sleep(backoffMs);
+    }
 
-    // Accumulate cost into batch tracker
-    if (result.costSummary) {
-      const batchTracker = getBatchCostTracker();
-      // Re-add raw entries (CostTracker.add re-calculates cost from token counts)
-      for (const entry of result.costSummary.entries) {
-        batchTracker.add({
-          step: entry.step,
-          provider: entry.provider,
-          model: entry.model,
-          estimatedInputTokens: entry.estimatedInputTokens,
-          estimatedOutputTokens: entry.estimatedOutputTokens,
-          estimatedThinkingTokens: entry.estimatedThinkingTokens,
-          searchCalls: entry.searchCalls,
-          searchType: entry.searchType,
-        });
+    try {
+      log(`Analyzing: ${label}${attempt > 0 ? ` (attempt ${attempt + 1})` : ''}`);
+      const result = await runFullAnalysis(product, variant, settings, (step) => {
+        log(`  ${step}`);
+      }, opts.searchMode, opts.provider, opts.fast);
+
+      // Accumulate cost into batch tracker
+      if (result.costSummary) {
+        const batchTracker = getBatchCostTracker();
+        for (const entry of result.costSummary.entries) {
+          batchTracker.add({
+            step: entry.step,
+            provider: entry.provider,
+            model: entry.model,
+            estimatedInputTokens: entry.estimatedInputTokens,
+            estimatedOutputTokens: entry.estimatedOutputTokens,
+            estimatedThinkingTokens: entry.estimatedThinkingTokens,
+            searchCalls: entry.searchCalls,
+            searchType: entry.searchType,
+          });
+        }
       }
-    }
 
-    if (result.error) {
-      logError(`Analysis failed for ${label}: ${result.error}`);
-      return { variantId: variant.id, success: false, applied: false, price: null, error: result.error };
-    }
+      if (result.error) {
+        lastError = result.error;
 
-    // Save analysis to DB
-    await saveAnalysis(product.id, variant.id, result);
+        // Check if this is a transient error worth retrying
+        if (attempt < opts.maxRetries && isTransient(result.error) && !isFatal(result.error)) {
+          logWarn(`Transient error for ${label}: ${result.error}`);
+          continue; // retry
+        }
 
-    const price = result.suggestedPrice;
-    log(`  Suggested: $${price?.toFixed(2) || 'none'} (confidence: ${result.confidence}, deliberated: ${result.wasDeliberated})`);
-
-    // Auto-apply
-    if (price && price > 0 && !opts.dryRun && !opts.skipApply) {
-      try {
-        await updateVariantPrice(variant.id, price);
-        await db.from('variants').update({ price }).eq('id', variant.id);
-        await db
-          .from('analyses')
-          .update({ applied: true, applied_at: new Date().toISOString(), previous_price: variant.price })
-          .match({ product_id: product.id, variant_id: variant.id });
-
-        log(`  APPLIED (${variant.id}): $${variant.price.toFixed(2)} -> $${price.toFixed(2)}`);
-        return { variantId: variant.id, success: true, applied: true, price, error: null };
-      } catch (applyErr) {
-        const msg = applyErr instanceof Error ? applyErr.message : 'Apply failed';
-        logError(`  Apply failed: ${msg}`);
-        return { variantId: variant.id, success: true, applied: false, price, error: `Apply failed: ${msg}` };
+        logError(`Analysis failed for ${label}: ${result.error}`);
+        return { variantId: variant.id, success: false, applied: false, price: null, error: result.error, confidence: 'low', flagged: false, flagReason: null, previousPrice: prevPrice };
       }
-    }
 
-    if (opts.dryRun) {
-      log(`  DRY RUN: Would apply $${price?.toFixed(2)}`);
-    }
+      // Save analysis to DB
+      await saveAnalysis(product.id, variant.id, result);
 
-    return { variantId: variant.id, success: true, applied: false, price, error: null };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : 'Unknown error';
-    logError(`${label}: ${msg}`);
-    return { variantId: variant.id, success: false, applied: false, price: null, error: msg };
+      const price = result.suggestedPrice;
+      const confidence = result.confidence || 'medium';
+      log(`  Suggested: $${price?.toFixed(2) || 'none'} (confidence: ${confidence}, deliberated: ${result.wasDeliberated})`);
+
+      // Confidence check
+      if (!meetsConfidenceThreshold(confidence, opts.minConfidence)) {
+        logWarn(`  Skipping apply — confidence "${confidence}" below minimum "${opts.minConfidence}"`);
+        return { variantId: variant.id, success: true, applied: false, price, error: null, confidence, flagged: false, flagReason: `Below min confidence: ${confidence} < ${opts.minConfidence}`, previousPrice: prevPrice };
+      }
+
+      // Price change sanity check
+      let flagged = false;
+      let flagReason: string | null = null;
+      if (price && prevPrice > 0) {
+        const check = checkPriceChange(prevPrice, price, opts.maxPriceChangePct);
+        flagged = check.flagged;
+        flagReason = check.reason;
+        if (flagged) {
+          logWarn(`  FLAGGED: ${flagReason}`);
+        }
+      }
+
+      // Auto-apply (skip if flagged — let user review)
+      if (price && price > 0 && !opts.dryRun && !opts.skipApply && !flagged) {
+        try {
+          await updateVariantPrice(variant.id, price);
+          await db.from('variants').update({ price }).eq('id', variant.id);
+          await db
+            .from('analyses')
+            .update({ applied: true, applied_at: new Date().toISOString(), previous_price: prevPrice })
+            .match({ product_id: product.id, variant_id: variant.id });
+
+          log(`  APPLIED (${variant.id}): $${prevPrice.toFixed(2)} -> $${price.toFixed(2)}`);
+          return { variantId: variant.id, success: true, applied: true, price, error: null, confidence, flagged, flagReason, previousPrice: prevPrice };
+        } catch (applyErr) {
+          const msg = applyErr instanceof Error ? applyErr.message : 'Apply failed';
+          logError(`  Apply failed: ${msg}`);
+          return { variantId: variant.id, success: true, applied: false, price, error: `Apply failed: ${msg}`, confidence, flagged, flagReason, previousPrice: prevPrice };
+        }
+      }
+
+      if (opts.dryRun) {
+        log(`  DRY RUN: Would apply $${price?.toFixed(2)}${flagged ? ' (FLAGGED — would skip)' : ''}`);
+      } else if (flagged) {
+        log(`  HELD: Price flagged for review, not applied`);
+      }
+
+      return { variantId: variant.id, success: true, applied: false, price, error: null, confidence, flagged, flagReason, previousPrice: prevPrice };
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : 'Unknown error';
+
+      // Check if this is worth retrying
+      if (attempt < opts.maxRetries && isTransient(lastError) && !isFatal(lastError)) {
+        logWarn(`Transient error for ${label}: ${lastError}`);
+        continue; // retry
+      }
+
+      logError(`${label}: ${lastError}`);
+      return { variantId: variant.id, success: false, applied: false, price: null, error: lastError, confidence: 'low', flagged: false, flagReason: null, previousPrice: prevPrice };
+    }
   }
+
+  // All retries exhausted
+  logError(`${label}: All ${opts.maxRetries} retries exhausted. Last error: ${lastError}`);
+  return { variantId: variant.id, success: false, applied: false, price: null, error: `Retries exhausted: ${lastError}`, confidence: 'low', flagged: false, flagReason: null, previousPrice: prevPrice };
 }
 
 // ---------------------------------------------------------------------------
@@ -394,17 +611,30 @@ async function processVariantMarkup(
   variant: Variant,
   multiplier: number,
   db: ReturnType<typeof createClient>,
-  opts: { dryRun: boolean; skipApply: boolean },
-): Promise<{ success: boolean; applied: boolean; price: number | null; error: string | null }> {
+  opts: { dryRun: boolean; skipApply: boolean; maxPriceChangePct: number },
+): Promise<{ success: boolean; applied: boolean; price: number | null; error: string | null; confidence: string; flagged: boolean; flagReason: string | null; previousPrice: number }> {
   const label = `${product.title} / ${variant.title || 'Default'} (${variant.id})`;
+  const prevPrice = variant.price || 0;
 
   if (variant.cost === null || variant.cost === undefined || variant.cost <= 0) {
     logError(`${label}: No cost data — cannot apply markup`);
-    return { success: false, applied: false, price: null, error: 'No cost data on variant' };
+    return { success: false, applied: false, price: null, error: 'No cost data on variant', confidence: 'high', flagged: false, flagReason: null, previousPrice: prevPrice };
   }
 
   const price = Math.round(variant.cost * multiplier * 100) / 100;
   log(`Markup: ${label} — cost $${variant.cost.toFixed(2)} × ${multiplier} = $${price.toFixed(2)}`);
+
+  // Price change sanity check
+  let flagged = false;
+  let flagReason: string | null = null;
+  if (prevPrice > 0) {
+    const check = checkPriceChange(prevPrice, price, opts.maxPriceChangePct);
+    flagged = check.flagged;
+    flagReason = check.reason;
+    if (flagged) {
+      logWarn(`  FLAGGED: ${flagReason}`);
+    }
+  }
 
   // Save analysis record so --skip-analyzed works on future runs
   try {
@@ -433,30 +663,32 @@ async function processVariantMarkup(
     logError(`${label}: Failed to save analysis: ${msg}`);
   }
 
-  // Apply price
-  if (!opts.dryRun && !opts.skipApply) {
+  // Apply price (skip if flagged)
+  if (!opts.dryRun && !opts.skipApply && !flagged) {
     try {
       await updateVariantPrice(variant.id, price);
       await db.from('variants').update({ price }).eq('id', variant.id);
       await db
         .from('analyses')
-        .update({ applied: true, applied_at: new Date().toISOString(), previous_price: variant.price })
+        .update({ applied: true, applied_at: new Date().toISOString(), previous_price: prevPrice })
         .match({ product_id: product.id, variant_id: variant.id });
 
-      log(`  APPLIED (${variant.id}): $${variant.price.toFixed(2)} -> $${price.toFixed(2)}`);
-      return { success: true, applied: true, price, error: null };
+      log(`  APPLIED (${variant.id}): $${prevPrice.toFixed(2)} -> $${price.toFixed(2)}`);
+      return { success: true, applied: true, price, error: null, confidence: 'high', flagged, flagReason, previousPrice: prevPrice };
     } catch (applyErr) {
       const msg = applyErr instanceof Error ? applyErr.message : 'Apply failed';
       logError(`  Apply failed: ${msg}`);
-      return { success: true, applied: false, price, error: `Apply failed: ${msg}` };
+      return { success: true, applied: false, price, error: `Apply failed: ${msg}`, confidence: 'high', flagged, flagReason, previousPrice: prevPrice };
     }
   }
 
   if (opts.dryRun) {
-    log(`  DRY RUN: Would apply $${price.toFixed(2)}`);
+    log(`  DRY RUN: Would apply $${price.toFixed(2)}${flagged ? ' (FLAGGED — would skip)' : ''}`);
+  } else if (flagged) {
+    log(`  HELD: Price flagged for review, not applied`);
   }
 
-  return { success: true, applied: false, price, error: null };
+  return { success: true, applied: false, price, error: null, confidence: 'high', flagged, flagReason, previousPrice: prevPrice };
 }
 
 // ---------------------------------------------------------------------------
@@ -523,6 +755,92 @@ function saveFailedReport(failedProducts: FailedProduct[], startTime: number, to
 }
 
 // ---------------------------------------------------------------------------
+// Save price changes report (before/after comparison)
+// ---------------------------------------------------------------------------
+function savePriceChangesReport(priceChanges: PriceChange[], startTime: number) {
+  if (priceChanges.length === 0) return null;
+
+  const reportsDir = path.join(process.cwd(), 'reports');
+  if (!fs.existsSync(reportsDir)) {
+    fs.mkdirSync(reportsDir, { recursive: true });
+  }
+
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const timeStr = new Date().toISOString().slice(11, 19).replace(/:/g, '-');
+  const reportPath = path.join(reportsDir, `price-changes-${dateStr}-${timeStr}.json`);
+
+  // Calculate summary stats
+  const applied = priceChanges.filter(c => !c.flagged);
+  const flagged = priceChanges.filter(c => c.flagged);
+  const increases = priceChanges.filter(c => c.newPrice > c.previousPrice);
+  const decreases = priceChanges.filter(c => c.newPrice < c.previousPrice);
+  const unchanged = priceChanges.filter(c => c.newPrice === c.previousPrice);
+
+  const avgChangePct = priceChanges.length > 0
+    ? priceChanges.reduce((sum, c) => sum + c.changePct, 0) / priceChanges.length
+    : 0;
+
+  const report = {
+    generatedAt: new Date().toISOString(),
+    summary: {
+      totalChanges: priceChanges.length,
+      applied: applied.length,
+      flagged: flagged.length,
+      increases: increases.length,
+      decreases: decreases.length,
+      unchanged: unchanged.length,
+      avgChangePct: parseFloat(avgChangePct.toFixed(1)),
+      elapsedMinutes: parseFloat(((Date.now() - startTime) / 1000 / 60).toFixed(1)),
+    },
+    // Flagged items (need manual review)
+    flaggedForReview: flagged.map(c => ({
+      product: c.productTitle,
+      variant: c.variantTitle,
+      variantId: c.variantId,
+      previous: c.previousPrice,
+      suggested: c.newPrice,
+      changePct: c.changePct.toFixed(1) + '%',
+      reason: c.flagReason,
+      confidence: c.confidence,
+    })),
+    // All changes
+    priceChanges: priceChanges.map(c => ({
+      product: c.productTitle,
+      variant: c.variantTitle,
+      variantId: c.variantId,
+      previous: c.previousPrice,
+      new: c.newPrice,
+      changePct: (c.changePct > 0 ? (c.newPrice > c.previousPrice ? '+' : '-') : '') + c.changePct.toFixed(1) + '%',
+      confidence: c.confidence,
+      method: c.pricingMethod,
+      flagged: c.flagged,
+    })),
+  };
+
+  fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+  log(`Price changes report saved: ${reportPath}`);
+
+  // Print summary table
+  console.log('\n' + '─'.repeat(78));
+  console.log('  PRICE CHANGES SUMMARY');
+  console.log('─'.repeat(78));
+  console.log(`  Total: ${priceChanges.length} | Increases: ${increases.length} | Decreases: ${decreases.length} | Unchanged: ${unchanged.length}`);
+  console.log(`  Avg change: ${avgChangePct.toFixed(1)}%`);
+  if (flagged.length > 0) {
+    console.log(`  FLAGGED FOR REVIEW: ${flagged.length} (see report for details)`);
+    for (const f of flagged.slice(0, 10)) {
+      console.log(`    - ${f.productTitle} / ${f.variantTitle}: $${f.previousPrice.toFixed(2)} → $${f.newPrice.toFixed(2)} (${f.changePct.toFixed(1)}%)`);
+    }
+    if (flagged.length > 10) {
+      console.log(`    ... and ${flagged.length - 10} more (see full report)`);
+    }
+  }
+  console.log('─'.repeat(78));
+
+  return reportPath;
+}
+
+// ---------------------------------------------------------------------------
 // Load failed products from a previous report for re-running
 // ---------------------------------------------------------------------------
 function loadFailedReport(reportPath: string): { productId: string; variantId: string }[] {
@@ -550,27 +868,30 @@ async function main() {
     fast: opts.fast,
   };
 
-  console.log('\n' + '='.repeat(70));
-  console.log('  Oil Slick Pad — Batch Price Analyzer (Volume-Aware)');
-  console.log('='.repeat(70));
-  console.log(`  Vendor filter:  ${opts.vendor || 'ALL'}`);
-  console.log(`  Status filter:  ${opts.status}`);
-  console.log(`  Concurrency:    ${opts.concurrency} workers`);
-  console.log(`  Dry run:        ${opts.dryRun}`);
-  console.log(`  Skip apply:     ${opts.skipApply}`);
-  console.log(`  Skip analyzed:  ${opts.skipAnalyzed}`);
-  console.log(`  Fast mode:      ${opts.fast ? 'YES (cheap models, no reflection/deliberation)' : 'no'}`);
-  console.log(`  Search mode:    ${opts.searchMode}`);
-  console.log(`  AI Provider:    ${opts.provider === 'openai' ? 'SMART ROUTING (multi-provider)' : opts.provider.toUpperCase()}`);
-  console.log(`  Limit:          ${opts.limit || 'none'}`);
-  console.log(`  Failed report:  ${opts.failedReport || 'none'}`);
-  console.log(`  Product IDs:    ${opts.productIds ? opts.productIds.join(', ') : 'ALL (filtered by vendor/status)'}`);
-  console.log(`  Markup:         ${opts.markup ? `${opts.markup}x cost (skip AI)` : 'none (use AI)'}`);
-  console.log(`  Volume pricing: ENABLED (qty variants auto-derived from base)`);
-  console.log(`  Visual analysis: ENABLED (Gemini 2.5 Flash for product images)`);
-  console.log('─'.repeat(70));
+  console.log('\n' + '='.repeat(78));
+  console.log('  Oil Slick Pad — Batch Price Analyzer v2 (Volume-Aware)');
+  console.log('='.repeat(78));
+  console.log(`  Vendor filter:    ${opts.vendor || 'ALL'}`);
+  console.log(`  Status filter:    ${opts.status}`);
+  console.log(`  Concurrency:      ${opts.concurrency} workers`);
+  console.log(`  Dry run:          ${opts.dryRun}`);
+  console.log(`  Skip apply:       ${opts.skipApply}`);
+  console.log(`  Skip analyzed:    ${opts.skipAnalyzed}`);
+  console.log(`  Fast mode:        ${opts.fast ? 'YES (cheap models, no reflection/deliberation)' : 'no'}`);
+  console.log(`  Search mode:      ${opts.searchMode}`);
+  console.log(`  AI Provider:      ${opts.provider === 'openai' ? 'SMART ROUTING (multi-provider)' : opts.provider.toUpperCase()}`);
+  console.log(`  Limit:            ${opts.limit || 'none'}`);
+  console.log(`  Failed report:    ${opts.failedReport || 'none'}`);
+  console.log(`  Product IDs:      ${opts.productIds ? opts.productIds.join(', ') : 'ALL (filtered by vendor/status)'}`);
+  console.log(`  Markup:           ${opts.markup ? `${opts.markup}x cost (skip AI)` : 'none (use AI)'}`);
+  console.log(`  Min confidence:   ${opts.minConfidence}${opts.minConfidence === 'low' ? ' (apply all)' : opts.minConfidence === 'medium' ? ' (skip low)' : ' (only high)'}`);
+  console.log(`  Auto-retry:       ${opts.maxRetries > 0 ? `${opts.maxRetries} retries (exponential backoff)` : 'disabled'}`);
+  console.log(`  Max price change: ${opts.maxPriceChangePct > 0 ? `${opts.maxPriceChangePct}% (flag larger changes)` : 'no limit'}`);
+  console.log(`  Volume pricing:   ENABLED (qty variants auto-derived from base)`);
+  console.log(`  Visual analysis:  ENABLED (Gemini 2.5 Flash for product images)`);
+  console.log('─'.repeat(78));
   console.log(getRoutingSummary(routerOpts));
-  console.log('='.repeat(70) + '\n');
+  console.log('='.repeat(78) + '\n');
 
   // Validate env vars
   const requiredEnv = [
@@ -843,7 +1164,7 @@ async function main() {
 
   // Log to activity_log
   await db.from('activity_log').insert({
-    message: `Batch started: ${toProcess.length} variants (${productGroups.size} products), ${opts.concurrency} workers, ${opts.provider.toUpperCase()}${opts.fast ? ' FAST' : ''}${opts.vendor ? ` (vendor: ${opts.vendor})` : ''}${opts.failedReport ? ' (retry mode)' : ''}${opts.skipAnalyzed ? ' (skip-analyzed)' : ''}${opts.markup ? ` (${opts.markup}x markup)` : ''}, volume-pricing ENABLED, auto-apply${opts.dryRun ? ' (DRY RUN)' : ''}`,
+    message: `Batch started: ${toProcess.length} variants (${productGroups.size} products), ${opts.concurrency} workers, ${opts.provider.toUpperCase()}${opts.fast ? ' FAST' : ''}${opts.vendor ? ` (vendor: ${opts.vendor})` : ''}${opts.failedReport ? ' (retry mode)' : ''}${opts.skipAnalyzed ? ' (skip-analyzed)' : ''}${opts.markup ? ` (${opts.markup}x markup)` : ''}, min-conf=${opts.minConfidence}, retry=${opts.maxRetries}, volume-pricing ENABLED, auto-apply${opts.dryRun ? ' (DRY RUN)' : ''}`,
     type: 'info',
   });
 
@@ -854,9 +1175,12 @@ async function main() {
   let failed = 0;
   let applied = 0;
   let volumeDerived = 0;
+  let skippedConfidence = 0;
+  let flaggedChanges = 0;
   let fatalError: string | null = null;
   let activeWorkers = 0;
   const failedProducts: FailedProduct[] = [];
+  const priceChanges: PriceChange[] = [];
   const progressInterval = Math.max(1, Math.floor(toProcess.length / 20)); // Report ~20 times
 
   // Create tasks per product group (not per variant) for volume-aware processing
@@ -871,12 +1195,16 @@ async function main() {
         price: null,
         error: 'Skipped (fatal error)',
         pricingMethod: 'ai' as const,
+        confidence: 'low',
+        flagged: false,
+        flagReason: null,
+        previousPrice: v.price || 0,
       }));
     }
 
     activeWorkers++;
 
-    let taskResults: Array<{ variantId: string; success: boolean; applied: boolean; price: number | null; error: string | null; pricingMethod: 'ai' | 'volume_formula' }>;
+    let taskResults: Array<{ variantId: string; success: boolean; applied: boolean; price: number | null; error: string | null; pricingMethod: 'ai' | 'volume_formula'; confidence: string; flagged: boolean; flagReason: string | null; previousPrice: number }>;
 
     if (opts.markup) {
       // Markup mode: process each variant individually (no volume logic)
@@ -885,6 +1213,7 @@ async function main() {
         const r = await processVariantMarkup(product, variant, opts.markup!, db, {
           dryRun: opts.dryRun,
           skipApply: opts.skipApply,
+          maxPriceChangePct: opts.maxPriceChangePct,
         });
         taskResults.push({ variantId: variant.id, ...r, pricingMethod: 'ai' });
       }
@@ -899,6 +1228,9 @@ async function main() {
           searchMode: opts.searchMode,
           provider: opts.provider,
           fast: opts.fast,
+          minConfidence: opts.minConfidence,
+          maxRetries: opts.maxRetries,
+          maxPriceChangePct: opts.maxPriceChangePct,
         },
       );
       taskResults = results;
@@ -911,6 +1243,36 @@ async function main() {
       if (r.success) {
         completed++;
         if (r.pricingMethod === 'volume_formula') volumeDerived++;
+
+        // Track confidence skips
+        if (r.flagReason && r.flagReason.startsWith('Below min confidence')) {
+          skippedConfidence++;
+        }
+
+        // Track flagged price changes
+        if (r.flagged) {
+          flaggedChanges++;
+        }
+
+        // Record price change for report
+        if (r.price && r.price > 0) {
+          const variant = variantsToProcess.find(v => v.id === r.variantId);
+          const prevPrice = r.previousPrice || 0;
+          const changePct = prevPrice > 0 ? Math.abs((r.price - prevPrice) / prevPrice) * 100 : 0;
+          priceChanges.push({
+            productId: product.id,
+            variantId: r.variantId,
+            productTitle: product.title,
+            variantTitle: variant?.title || 'Default',
+            previousPrice: prevPrice,
+            newPrice: r.price,
+            changePct,
+            confidence: r.confidence,
+            pricingMethod: r.pricingMethod,
+            flagged: r.flagged,
+            flagReason: r.flagReason,
+          });
+        }
       } else {
         failed++;
         const variant = variantsToProcess.find(v => v.id === r.variantId);
@@ -921,6 +1283,7 @@ async function main() {
           variantTitle: variant?.title || 'Default',
           error: r.error || 'Unknown error',
           timestamp: new Date().toISOString(),
+          retryCount: 0,
         });
       }
       if (r.applied) applied++;
@@ -935,7 +1298,7 @@ async function main() {
     // Periodic progress reporting
     const total = completed + failed;
     if (total % progressInterval === 0 || total === toProcess.length) {
-      logProgress(total, toProcess.length, failed, applied, activeWorkers);
+      logProgress(total, toProcess.length, failed, applied, skippedConfidence, flaggedChanges, activeWorkers);
     }
 
     return taskResults;
@@ -955,32 +1318,40 @@ async function main() {
   const batchCostTracker = getBatchCostTracker();
   const costSummary = batchCostTracker.getSummary();
 
-  console.log('\n' + '='.repeat(70));
+  console.log('\n' + '='.repeat(78));
   console.log('  BATCH COMPLETE');
-  console.log('='.repeat(70));
-  console.log(`  Total:       ${toProcess.length}`);
-  console.log(`  Completed:   ${completed}`);
-  console.log(`  Failed:      ${failed}`);
-  console.log(`  Applied:     ${applied}`);
-  console.log(`  Vol. Derived:${volumeDerived} (formula-priced, no AI calls)`);
-  console.log(`  Concurrency: ${opts.concurrency} workers`);
-  console.log(`  Rate:        ${rate} products/min`);
-  console.log(`  Elapsed:     ${elapsed} minutes`);
-  if (fatalError) {
-    console.log(`  FATAL:       ${fatalError}`);
+  console.log('='.repeat(78));
+  console.log(`  Total:            ${toProcess.length}`);
+  console.log(`  Completed:        ${completed}`);
+  console.log(`  Failed:           ${failed}`);
+  console.log(`  Applied:          ${applied}`);
+  console.log(`  Vol. Derived:     ${volumeDerived} (formula-priced, no AI calls)`);
+  console.log(`  Skipped (conf):   ${skippedConfidence} (below ${opts.minConfidence} confidence)`);
+  console.log(`  Flagged (change): ${flaggedChanges} (exceeded ${opts.maxPriceChangePct || '∞'}% threshold)`);
+  console.log(`  Concurrency:      ${opts.concurrency} workers`);
+  console.log(`  Rate:             ${rate} products/min`);
+  console.log(`  Elapsed:          ${elapsed} minutes`);
+  if (opts.maxRetries > 0) {
+    console.log(`  Retry policy:     ${opts.maxRetries} retries (exponential backoff)`);
   }
-  console.log('='.repeat(70));
+  if (fatalError) {
+    console.log(`  FATAL:            ${fatalError}`);
+  }
+  console.log('='.repeat(78));
   console.log('');
   console.log(batchCostTracker.formatReport());
   console.log(`  Cost per product: $${completed > 0 ? (costSummary.totalCost / completed).toFixed(4) : '0.0000'}`);
   console.log(`  Legacy cost (GPT-5.2): $${costSummary.legacyCostEstimate.toFixed(4)}`);
   console.log(`  Savings: $${costSummary.savings.toFixed(4)} (${costSummary.savingsPercent.toFixed(0)}%)`);
-  console.log('='.repeat(70) + '\n');
+  console.log('='.repeat(78) + '\n');
+
+  // Save price changes report
+  const priceReportPath = savePriceChangesReport(priceChanges, globalStartTime);
 
   // Save failed products report if there were failures
-  let reportPath: string | null = null;
+  let failedReportPath: string | null = null;
   if (failedProducts.length > 0) {
-    reportPath = saveFailedReport(failedProducts, globalStartTime, toProcess.length, applied);
+    failedReportPath = saveFailedReport(failedProducts, globalStartTime, toProcess.length, applied);
   } else {
     log('No failed products — all variants processed successfully!');
   }
@@ -988,7 +1359,7 @@ async function main() {
   // Log final result to activity_log
   const costPerProduct = completed > 0 ? (costSummary.totalCost / completed).toFixed(4) : '0';
   await db.from('activity_log').insert({
-    message: `Batch finished: ${completed} analyzed (${volumeDerived} vol-derived), ${failed} failed, ${applied} applied in ${elapsed}min (${rate}/min). Est. cost: $${costSummary.totalCost.toFixed(2)} ($${costPerProduct}/product, saved ${costSummary.savingsPercent.toFixed(0)}% vs GPT-5.2)${fatalError ? ` (FATAL: ${fatalError})` : ''}${reportPath ? ` — failed report: ${path.basename(reportPath)}` : ''}`,
+    message: `Batch finished: ${completed} analyzed (${volumeDerived} vol-derived), ${failed} failed, ${applied} applied, ${skippedConfidence} skipped (conf), ${flaggedChanges} flagged in ${elapsed}min (${rate}/min). Est. cost: $${costSummary.totalCost.toFixed(2)} ($${costPerProduct}/product, saved ${costSummary.savingsPercent.toFixed(0)}% vs GPT-5.2)${fatalError ? ` (FATAL: ${fatalError})` : ''}${failedReportPath ? ` — failed: ${path.basename(failedReportPath)}` : ''}${priceReportPath ? ` — changes: ${path.basename(priceReportPath)}` : ''}`,
     type: fatalError ? 'error' : 'success',
   });
 

@@ -614,7 +614,7 @@ FINANCIAL DATA:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Current Price: $${currentPrice.toFixed(2)}
 Cost: ${cost > 0 ? '$' + cost.toFixed(2) : 'UNKNOWN'}
-${cost > 0 ? `Current Margin: ${((currentPrice - cost) / cost * 100).toFixed(1)}%` : ''}
+${cost > 0 ? `Current Gross Margin: ${((currentPrice - cost) / currentPrice * 100).toFixed(1)}%` : ''}
 MSRP/Compare At: ${msrp ? '$' + msrp.toFixed(2) : 'None'}
 ${pack.isMultiPack ? `
 ⚠️ CRITICAL — MULTI-PACK PRODUCT:
