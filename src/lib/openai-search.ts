@@ -4,28 +4,9 @@
 
 import { openaiRateLimiter } from './rate-limiter';
 import { parseAIJson } from './openai';
-import { getAllCompetitorDomains } from './local-competitor-data';
+import { RETAIL_SMOKE_SHOPS, isValidPrice, isKnownRetailer } from './constants';
 import type { ProductIdentity } from '@/types';
 import type { CompetitorPrice, CompetitorSearchResult } from './competitors';
-
-// PRIMARY price authority sites — search these FIRST, weight their prices highest
-const PRIMARY_PRICE_AUTHORITIES = [
-  'dragonchewer.com', 'marijuanapackaging.com', 'greentechpackaging.com',
-];
-
-// Known retail smoke shop domains — prioritized during search
-// Includes all curated competitor domains from vendor-tagged research
-const RETAIL_SMOKE_SHOPS = [
-  'dragonchewer.com', 'marijuanapackaging.com', 'greentechpackaging.com',
-  'smokea.com', 'dankgeek.com', 'everythingfor420.com', 'grasscity.com',
-  'dailyhighclub.com', 'brotherswithglass.com', 'smokecartel.com',
-  'headshop.com', 'thickassglass.com', 'gogopipes.com', 'kings-pipe.com',
-  'tokeplanet.com', 'shopstaywild.com', 'paborito.com', 'stoners.com',
-  'badassglass.com', 'dankstop.com', 'hemper.co', 'ssmokeshop.com',
-  'worldofbongs.com', 'bongoutlet.com', 'aqualabtechnologies.com',
-  // Additional domains from vendor-tagged competitor research
-  ...getAllCompetitorDomains(),
-];
 
 function getOpenAIKey(): string {
   const key = process.env.OPENAI_API_KEY;

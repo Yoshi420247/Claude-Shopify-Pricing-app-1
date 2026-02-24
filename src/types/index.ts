@@ -257,3 +257,68 @@ export interface DashboardMetrics {
   belowFloor: number;
   missingCosts: number;
 }
+
+// ============================================================================
+// Batch Job Types
+// ============================================================================
+
+/** Database row shape for batch_jobs table */
+export interface BatchJobRow {
+  id: string;
+  name: string;
+  total_variants: number;
+  chunk_size: number;
+  auto_apply: boolean;
+  ai_unrestricted: boolean;
+  variant_ids: Array<{ productId: string; variantId: string }>;
+  completed: number;
+  failed: number;
+  applied: number;
+  status: 'pending' | 'running' | 'paused' | 'completed' | 'cancelled';
+  current_chunk: number;
+  last_error: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  updated_at: string;
+}
+
+/** Client-side batch job shape (camelCase) */
+export interface BatchJobClient {
+  id: string;
+  name: string;
+  totalVariants: number;
+  chunkSize: number;
+  autoApply: boolean;
+  aiUnrestricted: boolean;
+  completed: number;
+  failed: number;
+  applied: number;
+  status: 'pending' | 'running' | 'paused' | 'completed' | 'cancelled';
+  currentChunk: number;
+  lastError: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+/** Convert a batch_jobs DB row to the client-side shape */
+export function formatBatchJob(b: Record<string, unknown>): BatchJobClient {
+  return {
+    id: b.id as string,
+    name: (b.name as string) || 'Batch',
+    totalVariants: (b.total_variants as number) || 0,
+    chunkSize: (b.chunk_size as number) || 25,
+    autoApply: (b.auto_apply as boolean) || false,
+    aiUnrestricted: (b.ai_unrestricted as boolean) || false,
+    completed: (b.completed as number) || 0,
+    failed: (b.failed as number) || 0,
+    applied: (b.applied as number) || 0,
+    status: (b.status as BatchJobClient['status']) || 'pending',
+    currentChunk: (b.current_chunk as number) || 0,
+    lastError: (b.last_error as string) || null,
+    createdAt: (b.created_at as string) || '',
+    startedAt: (b.started_at as string) || null,
+    completedAt: (b.completed_at as string) || null,
+  };
+}

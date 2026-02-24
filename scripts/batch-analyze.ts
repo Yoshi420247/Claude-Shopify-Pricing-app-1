@@ -45,6 +45,8 @@ import { runVolumeAwareAnalysis, saveAnalysis, type SearchMode, type Provider } 
 import { runFullAnalysis } from '@/lib/pricing-engine';
 import { updateVariantPrice } from '@/lib/shopify';
 import { detectQuantityVariantGroups } from '@/lib/volume-pricing';
+import { getBatchCostTracker, resetBatchCostTracker } from '@/lib/cost-tracker';
+import { getRoutingSummary, type RouterOptions } from '@/lib/model-router';
 import type { Product, Variant, Settings } from '@/types';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -86,8 +88,8 @@ function parseArgs(): {
   };
   const has = (flag: string): boolean => args.includes(flag);
 
-  const rawSearch = get('--search-mode') || 'openai';
-  const searchMode: SearchMode = rawSearch === 'brave' ? 'brave' : rawSearch === 'amazon' ? 'amazon' : rawSearch === 'none' ? 'none' : 'openai';
+  const rawSearch = get('--search-mode') || 'gemini';
+  const searchMode: SearchMode = rawSearch === 'brave' ? 'brave' : rawSearch === 'amazon' ? 'amazon' : rawSearch === 'none' ? 'none' : rawSearch === 'openai' ? 'openai' : 'gemini';
 
   const rawMarkup = get('--markup');
   const markup = rawMarkup ? parseFloat(rawMarkup) : null;
@@ -324,6 +326,24 @@ async function processSingleVariant(
       log(`  ${step}`);
     }, opts.searchMode, opts.provider, opts.fast);
 
+    // Accumulate cost into batch tracker
+    if (result.costSummary) {
+      const batchTracker = getBatchCostTracker();
+      // Re-add raw entries (CostTracker.add re-calculates cost from token counts)
+      for (const entry of result.costSummary.entries) {
+        batchTracker.add({
+          step: entry.step,
+          provider: entry.provider,
+          model: entry.model,
+          estimatedInputTokens: entry.estimatedInputTokens,
+          estimatedOutputTokens: entry.estimatedOutputTokens,
+          estimatedThinkingTokens: entry.estimatedThinkingTokens,
+          searchCalls: entry.searchCalls,
+          searchType: entry.searchType,
+        });
+      }
+    }
+
     if (result.error) {
       logError(`Analysis failed for ${label}: ${result.error}`);
       return { variantId: variant.id, success: false, applied: false, price: null, error: result.error };
@@ -521,6 +541,15 @@ async function main() {
   const opts = parseArgs();
   globalStartTime = Date.now();
 
+  // Reset batch cost tracker
+  resetBatchCostTracker();
+
+  // Model routing configuration
+  const routerOpts: RouterOptions = {
+    forcedProvider: opts.provider === 'openai' ? null : opts.provider,
+    fast: opts.fast,
+  };
+
   console.log('\n' + '='.repeat(70));
   console.log('  Oil Slick Pad — Batch Price Analyzer (Volume-Aware)');
   console.log('='.repeat(70));
@@ -532,12 +561,15 @@ async function main() {
   console.log(`  Skip analyzed:  ${opts.skipAnalyzed}`);
   console.log(`  Fast mode:      ${opts.fast ? 'YES (cheap models, no reflection/deliberation)' : 'no'}`);
   console.log(`  Search mode:    ${opts.searchMode}`);
-  console.log(`  AI Provider:    ${opts.provider.toUpperCase()}`);
+  console.log(`  AI Provider:    ${opts.provider === 'openai' ? 'SMART ROUTING (multi-provider)' : opts.provider.toUpperCase()}`);
   console.log(`  Limit:          ${opts.limit || 'none'}`);
   console.log(`  Failed report:  ${opts.failedReport || 'none'}`);
   console.log(`  Product IDs:    ${opts.productIds ? opts.productIds.join(', ') : 'ALL (filtered by vendor/status)'}`);
   console.log(`  Markup:         ${opts.markup ? `${opts.markup}x cost (skip AI)` : 'none (use AI)'}`);
   console.log(`  Volume pricing: ENABLED (qty variants auto-derived from base)`);
+  console.log(`  Visual analysis: ENABLED (Gemini 2.5 Flash for product images)`);
+  console.log('─'.repeat(70));
+  console.log(getRoutingSummary(routerOpts));
   console.log('='.repeat(70) + '\n');
 
   // Validate env vars
@@ -547,14 +579,16 @@ async function main() {
     'SHOPIFY_STORE_NAME',
     'SHOPIFY_ACCESS_TOKEN',
   ];
-  // Only require API keys when NOT using pure markup mode
+  // With smart routing, we need both OpenAI (for analysis) and Google (for search + vision)
   if (!opts.markup) {
     if (opts.provider === 'claude') {
       requiredEnv.push('ANTHROPIC_API_KEY');
     } else if (opts.provider === 'gemini') {
       requiredEnv.push('GOOGLE_API_KEY');
     } else {
+      // Smart routing: OpenAI for reasoning, Gemini for search + visual
       requiredEnv.push('OPENAI_API_KEY');
+      requiredEnv.push('GOOGLE_API_KEY');
     }
   }
   // Only require BRAVE_API_KEY when using brave search mode
@@ -917,6 +951,10 @@ async function main() {
     ? ((completed + failed) / ((Date.now() - globalStartTime) / 1000 / 60)).toFixed(1)
     : '0';
 
+  // Get batch cost summary
+  const batchCostTracker = getBatchCostTracker();
+  const costSummary = batchCostTracker.getSummary();
+
   console.log('\n' + '='.repeat(70));
   console.log('  BATCH COMPLETE');
   console.log('='.repeat(70));
@@ -931,6 +969,12 @@ async function main() {
   if (fatalError) {
     console.log(`  FATAL:       ${fatalError}`);
   }
+  console.log('='.repeat(70));
+  console.log('');
+  console.log(batchCostTracker.formatReport());
+  console.log(`  Cost per product: $${completed > 0 ? (costSummary.totalCost / completed).toFixed(4) : '0.0000'}`);
+  console.log(`  Legacy cost (GPT-5.2): $${costSummary.legacyCostEstimate.toFixed(4)}`);
+  console.log(`  Savings: $${costSummary.savings.toFixed(4)} (${costSummary.savingsPercent.toFixed(0)}%)`);
   console.log('='.repeat(70) + '\n');
 
   // Save failed products report if there were failures
@@ -942,8 +986,9 @@ async function main() {
   }
 
   // Log final result to activity_log
+  const costPerProduct = completed > 0 ? (costSummary.totalCost / completed).toFixed(4) : '0';
   await db.from('activity_log').insert({
-    message: `Batch finished: ${completed} analyzed (${volumeDerived} volume-derived), ${failed} failed, ${applied} applied in ${elapsed}min (${rate}/min, ${opts.concurrency} workers)${fatalError ? ` (FATAL: ${fatalError})` : ''}${reportPath ? ` — failed report: ${path.basename(reportPath)}` : ''}`,
+    message: `Batch finished: ${completed} analyzed (${volumeDerived} vol-derived), ${failed} failed, ${applied} applied in ${elapsed}min (${rate}/min). Est. cost: $${costSummary.totalCost.toFixed(2)} ($${costPerProduct}/product, saved ${costSummary.savingsPercent.toFixed(0)}% vs GPT-5.2)${fatalError ? ` (FATAL: ${fatalError})` : ''}${reportPath ? ` — failed report: ${path.basename(reportPath)}` : ''}`,
     type: fatalError ? 'error' : 'success',
   });
 

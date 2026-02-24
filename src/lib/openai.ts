@@ -8,8 +8,14 @@ function getOpenAIKey(): string {
   return key;
 }
 
-// Use GPT-5.2 as default - best reasoning and vision capabilities
-const DEFAULT_MODEL = 'gpt-5.2';
+// GPT-4.1 mini is the default — excellent reasoning at 9x lower cost than GPT-5.2
+// GPT-4.1 nano is for trivial tasks (classification, query generation) at ~93x lower cost
+// GPT-5.2 is reserved for premium/complex deliberation only
+const DEFAULT_MODEL = 'gpt-4.1-mini';
+const NANO_MODEL = 'gpt-4.1-nano';
+const PREMIUM_MODEL = 'gpt-5.2';
+
+export { DEFAULT_MODEL as OPENAI_DEFAULT_MODEL, NANO_MODEL as OPENAI_NANO_MODEL, PREMIUM_MODEL as OPENAI_PREMIUM_MODEL };
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -35,10 +41,11 @@ export async function chatCompletion(options: ChatCompletionOptions): Promise<st
   const key = getOpenAIKey();
   const model = options.model || DEFAULT_MODEL;
 
-  // GPT-5.x and o1 models use max_completion_tokens
+  // GPT-4.1+ and GPT-5.x use max_completion_tokens
   const isGPT5 = model.startsWith('gpt-5');
+  const isGPT41 = model.startsWith('gpt-4.1');
   const isO1Model = model.startsWith('o1');
-  const useNewParams = isGPT5 || isO1Model;
+  const useNewParams = isGPT5 || isGPT41 || isO1Model;
 
   const body: Record<string, unknown> = {
     model,
@@ -46,17 +53,22 @@ export async function chatCompletion(options: ChatCompletionOptions): Promise<st
   };
 
   if (useNewParams) {
-    // GPT-5.x uses max_completion_tokens
+    // GPT-4.1+ and GPT-5.x use max_completion_tokens
     body.max_completion_tokens = options.maxTokens || 4000;
 
-    // GPT-5.2 supports reasoning_effort parameter (top-level for Chat Completions API)
+    // GPT-5.2 supports reasoning_effort parameter
     if (isGPT5 && options.reasoningEffort) {
       body.reasoning_effort = options.reasoningEffort;
     }
 
-    // GPT-5.x supports JSON mode
-    if (isGPT5 && options.jsonMode) {
+    // GPT-4.1+ and GPT-5.x support JSON mode
+    if ((isGPT5 || isGPT41) && options.jsonMode) {
       body.response_format = { type: 'json_object' };
+    }
+
+    // GPT-4.1 models support temperature
+    if (isGPT41 && options.temperature !== undefined) {
+      body.temperature = options.temperature;
     }
     // o1 doesn't support temperature or response_format
   } else {

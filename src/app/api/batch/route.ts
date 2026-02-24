@@ -4,6 +4,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
+import { formatBatchJob } from '@/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -108,7 +109,7 @@ export async function GET() {
     if (activeBatch) {
       return NextResponse.json({
         success: true,
-        batch: formatBatch(activeBatch),
+        batch: formatBatchJob(activeBatch),
         hasActiveBatch: true,
       });
     }
@@ -124,7 +125,7 @@ export async function GET() {
 
     return NextResponse.json({
       success: true,
-      batch: recentBatch ? formatBatch(recentBatch) : null,
+      batch: recentBatch ? formatBatchJob(recentBatch) : null,
       hasActiveBatch: false,
     });
   } catch (e) {
@@ -133,23 +134,4 @@ export async function GET() {
   }
 }
 
-function formatBatch(b: Record<string, unknown>) {
-  return {
-    id: b.id,
-    name: b.name,
-    totalVariants: b.total_variants,
-    chunkSize: b.chunk_size,
-    autoApply: b.auto_apply,
-    aiUnrestricted: b.ai_unrestricted,
-    completed: b.completed,
-    failed: b.failed,
-    applied: b.applied,
-    status: b.status,
-    currentChunk: b.current_chunk,
-    lastError: b.last_error,
-    createdAt: b.created_at,
-    startedAt: b.started_at,
-    completedAt: b.completed_at,
-    updatedAt: b.updated_at,
-  };
-}
+// formatBatchJob is imported from @/types

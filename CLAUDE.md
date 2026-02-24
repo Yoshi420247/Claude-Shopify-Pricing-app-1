@@ -11,15 +11,23 @@ npm run lint         # ESLint
 
 ## Project Overview
 
-AI-powered dynamic pricing optimization for "Oil Slick Pad" Shopify smoke shop. Analyzes products, researches competitor prices, and suggests optimal pricing using multi-provider AI (OpenAI GPT-5.2, Claude Sonnet 4.5, Google Gemini 2.5-Flash).
+AI-powered dynamic pricing optimization for "Oil Slick Pad" Shopify smoke shop. Analyzes products, researches competitor prices, and suggests optimal pricing using smart multi-model AI routing for minimum cost with maximum quality.
 
 ## Tech Stack
 
 - **Framework**: Next.js 14 (App Router) + React 18 + TypeScript 5.5 (strict)
 - **Styling**: Tailwind CSS 3.4
 - **Database**: Supabase (PostgreSQL with RLS)
-- **AI Providers**: OpenAI GPT-5.2, Claude Sonnet 4.5, Gemini 2.5-Flash (all via raw fetch, no SDK)
-- **Search**: Brave Search API, OpenAI web search, Amazon lookup
+- **AI Providers**: Smart multi-model routing (all via raw fetch, no SDK):
+  - **Classify**: GPT-4.1 nano ($0.02/$0.15/MTok) — product identification
+  - **Vision**: Gemini 2.5 Flash ($0.30/$2.50/MTok) — product image analysis
+  - **Search**: Gemini 2.5 Flash + Google Search grounding (free 500/day)
+  - **Analyze**: GPT-4.1 mini ($0.40/$1.60/MTok) — core pricing reasoning
+  - **Deliberate**: GPT-4.1 mini — deep price validation
+  - **Reflect**: GPT-4.1 nano — query regeneration
+  - **Override**: `--provider claude|gemini` forces single-provider mode
+- **Search**: Gemini Google Search (default, free tier), OpenAI web search, Brave Search, Amazon lookup
+- **Cost Tracking**: Per-analysis and per-batch cost estimation with legacy comparison
 - **Deployment**: Vercel (serverless, 300s timeout)
 - **Scripts Runtime**: tsx 4.21 with separate tsconfig (`tsconfig.scripts.json`)
 - **Path Alias**: `@/*` → `./src/*`
@@ -46,12 +54,14 @@ src/
 │   ├── Sidebar.tsx                   # Navigation sidebar
 │   └── Toast.tsx                     # Notification toasts
 ├── lib/
-│   ├── pricing-engine.ts             # Core 4-step pricing pipeline
+│   ├── pricing-engine.ts             # Core 5-step pricing pipeline (identify→visual→search→analyze→deliberate)
+│   ├── model-router.ts               # Smart model routing — cheapest model per pipeline step
+│   ├── cost-tracker.ts               # Per-analysis + per-batch cost estimation with legacy comparison
 │   ├── pricing-strategies.ts         # 5 expert pricing algorithms
 │   ├── local-competitor-data.ts      # Curated vendor-tagged competitor database
-│   ├── openai.ts                     # GPT-5.2 client (raw fetch)
-│   ├── claude.ts                     # Claude Sonnet 4.5 client (raw fetch)
-│   ├── gemini.ts                     # Gemini 2.5-Flash client (raw fetch)
+│   ├── openai.ts                     # GPT-4.1 nano/mini/GPT-5.2 client (raw fetch)
+│   ├── claude.ts                     # Claude Sonnet 4.5 / Haiku 4.5 client (raw fetch)
+│   ├── gemini.ts                     # Gemini 2.5-Flash client + visual analysis (raw fetch)
 │   ├── openai-search.ts             # OpenAI Responses API web search
 │   ├── competitors.ts                # Brave Search competitor research
 │   ├── brave.ts                      # Brave Search API wrapper
@@ -95,13 +105,13 @@ SUPABASE_SERVICE_ROLE_KEY=...
 SHOPIFY_STORE_NAME=oil-slick-pad
 SHOPIFY_ACCESS_TOKEN=shpat_xxxxx
 
-# AI Providers
-OPENAI_API_KEY=sk-xxxxx
-ANTHROPIC_API_KEY=sk-ant-xxxxx        # Optional: Claude provider
-GOOGLE_API_KEY=AIzaxxxxx              # Optional: Gemini provider
+# AI Providers (both required for smart routing)
+OPENAI_API_KEY=sk-xxxxx               # Required: GPT-4.1 nano/mini for reasoning
+GOOGLE_API_KEY=AIzaxxxxx              # Required: Gemini for search + visual analysis
+ANTHROPIC_API_KEY=sk-ant-xxxxx        # Optional: Only if using --provider claude
 
 # Search
-BRAVE_API_KEY=BSAxxxxx                # Optional if using OpenAI search mode
+BRAVE_API_KEY=BSAxxxxx                # Optional: Only if using --search-mode brave
 ```
 
 ## Rate Limiters (src/lib/rate-limiter.ts)
@@ -118,19 +128,51 @@ All external APIs use singleton `ConcurrentRateLimiter` instances (semaphore + s
 
 Rate limiters are per-process singletons. Do NOT launch multiple concurrent `/api/batch/process` requests.
 
+## Smart Model Routing (src/lib/model-router.ts)
+
+Each pipeline step routes to the cheapest capable model automatically:
+
+| Step       | Default Model        | Fast Model      | Cost/MTok (in/out) | Why |
+|------------|---------------------|-----------------|--------------------|----|
+| Identify   | GPT-4.1 nano        | GPT-4.1 nano    | $0.02 / $0.15     | Simple classification |
+| Visual     | Gemini 2.5 Flash    | Gemini 2.5 Flash| $0.30 / $2.50     | Best vision/cost |
+| Search     | Gemini 2.5 Flash    | Gemini 2.5 Flash| Free (500/day)     | Google Search grounding |
+| Analyze    | GPT-4.1 mini        | GPT-4.1 nano    | $0.40 / $1.60     | Core reasoning |
+| Deliberate | GPT-4.1 mini        | GPT-4.1 nano    | $0.40 / $1.60     | Deep reasoning |
+| Reflect    | GPT-4.1 nano        | GPT-4.1 nano    | $0.02 / $0.15     | Query generation |
+
+**Estimated cost per product**: ~$0.01-$0.03 (down from ~$0.10-$0.25 with GPT-5.2)
+**1,000-product batch**: ~$15-30 (down from ~$100-250)
+
+Override with `--provider claude|gemini` to force a single provider for all steps.
+
+## Cost Tracking (src/lib/cost-tracker.ts)
+
+Every API call is tracked with estimated token counts and costs. Reports include:
+- Per-step cost breakdown (identify, visual, search, analyze, deliberate, reflect)
+- Per-provider cost breakdown (openai, gemini, claude)
+- Legacy cost comparison (what it would have cost with GPT-5.2 for everything)
+- Savings percentage
+
+Cost summaries are returned in API responses and printed in batch script output.
+
 ## Batch Processing Scripts
 
 ```bash
-# GitHub Actions or local — full options
+# GitHub Actions or local — smart routing (default, cheapest)
 npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts \
   --vendor "Vendor Name" \
   --status active \
   --concurrency 100 \
-  --provider gemini \          # openai | claude | gemini
-  --search-mode openai \       # openai | amazon | brave | none
+  --search-mode gemini \       # gemini (default) | openai | amazon | brave | none
   --skip-analyzed \
-  --fast \                     # Use cheaper models (gpt-4o-mini, haiku, gemini-2.0-flash)
+  --fast \                     # Use cheapest models (gpt-4.1-nano, haiku, gemini-2.5-flash)
   --dry-run
+
+# Force single provider (all steps use that provider)
+npx tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts \
+  --provider claude \           # openai | claude | gemini
+  --search-mode gemini
 
 # Sync prices from CSV
 npx tsx --tsconfig tsconfig.scripts.json scripts/sync-oil-slick-pricing.ts --dry-run
@@ -168,14 +210,17 @@ Curated from vendor-tagged competitor analysis spreadsheets. This is the FIRST-P
 
 ## Key Architecture Decisions
 
-1. **No SDK dependencies for AI** — All AI providers use raw `fetch()` calls, not official SDKs. The `openai` npm package is NOT installed.
-2. **Shopify dual protocol** — Product sync uses GraphQL; price updates use REST API. REST is being deprecated by Shopify.
-3. **Server-side only** — All external API calls run server-side via Next.js API routes (no CORS).
-4. **Service role separation** — Server routes use Supabase service role key (bypasses RLS).
-5. **Database-backed batches** — Batch jobs persist in `batch_jobs` table, survive page refresh/crash.
-6. **Volume pricing formula** — `price = base_price × (qty / base_qty) ^ exponent` where exponent defaults to 0.92.
-7. **Gross margin formula** — All calculations use `(price - cost) / price`, NOT markup `(price - cost) / cost`.
-8. **Local-first competitor search** — Curated vendor-tagged competitor data is checked BEFORE external search APIs. Known price benchmarks are injected with highest confidence weight.
+1. **Smart model routing** — Each pipeline step uses the cheapest capable model. GPT-4.1 nano for classification, Gemini 2.5 Flash for vision + search, GPT-4.1 mini for reasoning. ~6-10x cheaper than using GPT-5.2 for everything.
+2. **Visual product analysis** — Gemini 2.5 Flash analyzes product images to detect quality tier (import/domestic/heady), materials, craftsmanship, and brand signals. Visual analysis overrides text-based identity when they disagree.
+3. **Cost tracking** — Every API call is estimated and compared to legacy (GPT-5.2) costs. Batch reports show total cost, cost per product, and savings percentage.
+4. **No SDK dependencies for AI** — All AI providers use raw `fetch()` calls, not official SDKs. The `openai` npm package is NOT installed.
+5. **Shopify dual protocol** — Product sync uses GraphQL; price updates use REST API. REST is being deprecated by Shopify.
+6. **Server-side only** — All external API calls run server-side via Next.js API routes (no CORS).
+7. **Service role separation** — Server routes use Supabase service role key (bypasses RLS).
+8. **Database-backed batches** — Batch jobs persist in `batch_jobs` table, survive page refresh/crash.
+9. **Volume pricing formula** — `price = base_price × (qty / base_qty) ^ exponent` where exponent defaults to 0.92.
+10. **Gross margin formula** — All calculations use `(price - cost) / price`, NOT markup `(price - cost) / cost`.
+11. **Local-first competitor search** — Curated vendor-tagged competitor data is checked BEFORE external search APIs. Known price benchmarks are injected with highest confidence weight.
 
 ## No Tests
 

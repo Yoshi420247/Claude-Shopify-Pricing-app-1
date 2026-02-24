@@ -10,8 +10,8 @@ export async function POST(req: NextRequest) {
   try {
     const { productId, variantId, ai_unrestricted } = await req.json();
 
-    if (!productId || !variantId) {
-      return NextResponse.json({ success: false, error: 'productId and variantId required' }, { status: 400 });
+    if (!productId || typeof productId !== 'string' || !variantId || typeof variantId !== 'string') {
+      return NextResponse.json({ success: false, error: 'productId and variantId (strings) required' }, { status: 400 });
     }
 
     const db = createServerClient();
@@ -42,8 +42,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Settings not configured' }, { status: 400 });
     }
 
-    // Override ai_unrestricted from client (stored in localStorage, may not be in DB)
-    if (typeof ai_unrestricted === 'boolean') {
+    // Use server-side ai_unrestricted setting if available in DB;
+    // only fall back to client value if DB column doesn't exist yet
+    if (settings.ai_unrestricted === undefined && typeof ai_unrestricted === 'boolean') {
       settings.ai_unrestricted = ai_unrestricted;
     }
 
@@ -107,11 +108,22 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Include cost summary in response
+    const costSummary = targetResult.analysisResult.costSummary || null;
+
     return NextResponse.json({
       success: true,
       analysis: savedAnalysis,
       siblingAnalyses,
       quantityGroupDetected: !!quantityGroups,
+      costSummary: costSummary ? {
+        estimatedCost: costSummary.totalCost,
+        legacyCost: costSummary.legacyCostEstimate,
+        savings: costSummary.savings,
+        savingsPercent: costSummary.savingsPercent,
+        byStep: costSummary.byStep,
+        byProvider: costSummary.byProvider,
+      } : null,
     });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';

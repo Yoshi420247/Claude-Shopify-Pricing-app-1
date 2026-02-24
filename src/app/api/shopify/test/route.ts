@@ -9,13 +9,11 @@ export async function GET() {
   if (!store || !token) {
     return NextResponse.json({
       success: false,
-      error: 'Missing env vars',
-      hasStore: !!store,
-      hasToken: !!token,
+      error: 'Shopify credentials not configured. Set SHOPIFY_STORE_NAME and SHOPIFY_ACCESS_TOKEN environment variables.',
     }, { status: 400 });
   }
 
-  const url = `https://${store}.myshopify.com/admin/api/2024-10/graphql.json`;
+  const url = `https://${store}.myshopify.com/admin/api/2025-01/graphql.json`;
   const results: Record<string, unknown> = { url };
 
   // Test 1: Simple query
@@ -37,6 +35,7 @@ export async function GET() {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ query: simpleQuery }),
+      signal: AbortSignal.timeout(15000),
     });
     const data1 = await res1.json();
     results.simpleQuery = {
@@ -85,6 +84,7 @@ export async function GET() {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ query: inventoryQuery }),
+      signal: AbortSignal.timeout(15000),
     });
     const data2 = await res2.json();
     results.inventoryQuery = {

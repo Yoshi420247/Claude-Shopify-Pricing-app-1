@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useCallback } from 'react';
 import type { Product, Variant, Analysis, ProductIdentity, CompetitorAnalysis, Settings } from '@/types';
 
 interface Props {
@@ -13,6 +14,20 @@ interface Props {
 }
 
 export default function ProductModal({ product, variant, analysis, settings, onClose, onAccept, onReanalyze }: Props) {
+  // Close modal on Escape key
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (e.key === 'Escape') onClose();
+  }, [onClose]);
+
+  useEffect(() => {
+    document.addEventListener('keydown', handleKeyDown);
+    // Prevent body scroll when modal is open
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = '';
+    };
+  }, [handleKeyDown]);
   const marginPct = variant.cost ? ((variant.price - variant.cost) / variant.price) * 100 : null;
   const suggestedMargin = analysis?.suggested_price && variant.cost
     ? ((analysis.suggested_price - variant.cost) / analysis.suggested_price) * 100 : null;

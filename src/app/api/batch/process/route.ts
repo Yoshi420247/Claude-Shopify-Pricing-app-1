@@ -12,6 +12,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 import { runVolumeAwareAnalysis, saveAnalysis } from '@/lib/pricing-engine';
 import { updateVariantPrice } from '@/lib/shopify';
+import { formatBatchJob } from '@/types';
 import type { Product, Variant, Settings } from '@/types';
 
 export const dynamic = 'force-dynamic';
@@ -208,7 +209,7 @@ export async function POST(req: NextRequest) {
         success: true,
         done: true,
         reason: batch.status,
-        batch: formatBatch(batch),
+        batch: formatBatchJob(batch),
       });
     }
 
@@ -230,7 +231,7 @@ export async function POST(req: NextRequest) {
       max_decrease: 20,
       rounding_style: 'psychological',
       respect_msrp: true,
-      openai_model: 'gpt-5.2',
+      openai_model: 'gpt-4.1-mini',
       product_niche: 'smoke shop, heady glass, dab tools',
     };
 
@@ -266,7 +267,7 @@ export async function POST(req: NextRequest) {
         success: true,
         done: true,
         reason: 'completed',
-        batch: formatBatch(finalBatch || batch),
+        batch: formatBatchJob(finalBatch || batch),
       });
     }
 
@@ -386,7 +387,7 @@ export async function POST(req: NextRequest) {
       chunkCompleted,
       chunkFailed,
       chunkApplied,
-      batch: formatBatch(updatedBatch || batch),
+      batch: formatBatchJob(updatedBatch || batch),
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Unknown error';
@@ -395,22 +396,4 @@ export async function POST(req: NextRequest) {
   }
 }
 
-function formatBatch(b: Record<string, unknown>) {
-  return {
-    id: b.id,
-    name: b.name,
-    totalVariants: b.total_variants,
-    chunkSize: b.chunk_size,
-    autoApply: b.auto_apply,
-    aiUnrestricted: b.ai_unrestricted,
-    completed: b.completed,
-    failed: b.failed,
-    applied: b.applied,
-    status: b.status,
-    currentChunk: b.current_chunk,
-    lastError: b.last_error,
-    createdAt: b.created_at,
-    startedAt: b.started_at,
-    completedAt: b.completed_at,
-  };
-}
+// formatBatchJob is imported from @/types

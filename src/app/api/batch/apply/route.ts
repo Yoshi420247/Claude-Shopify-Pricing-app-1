@@ -4,16 +4,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 import { updateVariantPrice } from '@/lib/shopify';
+import { isValidPrice } from '@/lib/constants';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   try {
-    const { batchId } = await req.json();
+    const body = await req.json();
+    const { batchId } = body;
 
-    if (!batchId) {
-      return NextResponse.json({ success: false, error: 'batchId required' }, { status: 400 });
+    if (!batchId || typeof batchId !== 'string') {
+      return NextResponse.json({ success: false, error: 'batchId (string) required' }, { status: 400 });
     }
 
     const db = createServerClient();
@@ -55,6 +57,13 @@ export async function POST(req: NextRequest) {
 
     for (const analysis of analyses) {
       try {
+        // Validate suggested price before applying
+        if (!isValidPrice(analysis.suggested_price)) {
+          failed++;
+          errors.push(`${analysis.variant_id}: invalid price ${analysis.suggested_price}`);
+          continue;
+        }
+
         // Load current variant price before updating (for revert support)
         const { data: variant } = await db
           .from('variants')

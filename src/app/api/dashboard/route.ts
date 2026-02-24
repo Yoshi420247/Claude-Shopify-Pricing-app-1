@@ -15,25 +15,43 @@ export async function GET() {
     const { count: totalProducts } = await db.from('products').select('*', { count: 'exact', head: true });
     const { count: totalVariants } = await db.from('variants').select('*', { count: 'exact', head: true });
 
-    // Variants with cost data for margin calculation
-    const { data: variantsWithCost } = await db
-      .from('variants')
-      .select('price, cost')
-      .not('cost', 'is', null)
-      .gt('cost', 0);
+    // Variants with cost data for margin calculation — paginate to handle >1000 rows
+    let allVariantsWithCost: Array<{ price: number; cost: number }> = [];
+    let costPage = 0;
+    const costPageSize = 1000;
+    while (true) {
+      const { data: costBatch } = await db
+        .from('variants')
+        .select('price, cost')
+        .not('cost', 'is', null)
+        .gt('cost', 0)
+        .range(costPage * costPageSize, (costPage + 1) * costPageSize - 1);
+
+      if (!costBatch || costBatch.length === 0) break;
+      allVariantsWithCost = [...allVariantsWithCost, ...costBatch];
+      if (costBatch.length < costPageSize) break;
+      costPage++;
+      if (costPage > 50) break; // Safety limit
+    }
 
     let avgMargin: number | null = null;
     let negativeMargins = 0;
     let belowFloor = 0;
-    if (variantsWithCost && variantsWithCost.length > 0) {
+    if (allVariantsWithCost.length > 0) {
       let totalMargin = 0;
-      for (const v of variantsWithCost) {
+      for (const v of allVariantsWithCost) {
+        // Guard against zero-price variants to avoid NaN/Infinity
+        if (v.price <= 0) {
+          negativeMargins++;
+          continue;
+        }
         const margin = ((v.price - v.cost) / v.price) * 100;
         totalMargin += margin;
         if (margin < 0) negativeMargins++;
         else if (margin < minMargin) belowFloor++;
       }
-      avgMargin = totalMargin / variantsWithCost.length;
+      const validCount = allVariantsWithCost.filter(v => v.price > 0).length;
+      avgMargin = validCount > 0 ? totalMargin / validCount : null;
     }
 
     // Count variants missing costs

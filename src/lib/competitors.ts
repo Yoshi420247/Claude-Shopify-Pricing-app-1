@@ -4,28 +4,8 @@
 import { braveSearch, type BraveSearchResult } from './brave';
 import { braveRateLimiter } from './rate-limiter';
 import { searchCache } from './search-cache';
-import { getAllCompetitorDomains } from './local-competitor-data';
+import { RETAIL_SMOKE_SHOPS, WHOLESALE_DOMAINS, isKnownRetailer, isWholesaleDomain } from './constants';
 import type { ProductIdentity } from '@/types';
-
-// Known wholesale/distributor domains to always exclude
-const WHOLESALE_DOMAINS = [
-  'alibaba.com', 'dhgate.com', 'made-in-china.com', 'globalsources.com',
-  'wholesale', 'distributor', 'b2b', 'bulk', 'trade', 'reseller',
-  'indiamart.com', '1688.com', 'ec21.com', 'tradekey.com',
-  'wholesalecentral.com', 'dollardays.com', 'kole.com',
-  'chinabrands.com', 'lightinthebox.com',
-];
-
-// Known retail smoke shop domains — includes all curated competitor domains
-const RETAIL_SMOKE_SHOPS = [
-  'smokea.com', 'dankgeek.com', 'everythingfor420.com', 'grasscity.com',
-  'dailyhighclub.com', 'brotherswithglass.com', 'smokecartel.com',
-  'headshop.com', 'thickassglass.com', 'gogopipes.com', 'kings-pipe.com',
-  'tokeplanet.com', 'shopstaywild.com', 'paborito.com', 'stoners.com',
-  'badassglass.com', 'dankstop.com', 'hemper.co', 'ssmokeshop.com',
-  'worldofbongs.com', 'bongoutlet.com', 'aqualabtechnologies.com',
-  ...getAllCompetitorDomains(),
-];
 
 export interface CompetitorPrice {
   source: string;

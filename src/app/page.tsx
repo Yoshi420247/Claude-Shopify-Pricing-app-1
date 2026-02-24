@@ -198,7 +198,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Metrics */}
-        <div className="grid grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
             <p className="text-sm text-gray-400 mb-1">Total Products</p>
             <p className="text-2xl font-semibold">{metrics?.totalProducts ?? '—'}</p>
@@ -369,14 +369,29 @@ export default function DashboardPage() {
           </div>
           <div className="p-4 max-h-64 overflow-auto">
             {activity.length > 0 ? (
-              activity.map(a => (
-                <div key={a.id} className="text-sm py-2 border-b border-gray-700 last:border-0">
-                  <span className="text-gray-400">{a.message}</span>
-                  <span className="text-xs text-gray-600 ml-2">{formatTime(a.created_at)}</span>
-                </div>
-              ))
+              activity.map(a => {
+                const typeColors: Record<string, string> = {
+                  success: 'text-green-400',
+                  error: 'text-red-400',
+                  warning: 'text-yellow-400',
+                  info: 'text-blue-400',
+                };
+                const dotColors: Record<string, string> = {
+                  success: 'bg-green-400',
+                  error: 'bg-red-400',
+                  warning: 'bg-yellow-400',
+                  info: 'bg-blue-400',
+                };
+                return (
+                  <div key={a.id} className="flex items-start gap-2 text-sm py-2 border-b border-gray-700 last:border-0">
+                    <span className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${dotColors[a.type] || 'bg-gray-500'}`} />
+                    <span className={typeColors[a.type] || 'text-gray-400'}>{a.message}</span>
+                    <span className="text-xs text-gray-600 ml-auto shrink-0">{formatTime(a.created_at)}</span>
+                  </div>
+                );
+              })
             ) : (
-              <p className="text-sm text-gray-500">No recent activity</p>
+              <p className="text-sm text-gray-500">No recent activity. Sync products to get started.</p>
             )}
           </div>
         </div>
