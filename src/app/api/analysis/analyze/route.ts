@@ -108,11 +108,22 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Include cost summary in response
+    const costSummary = targetResult.analysisResult.costSummary || null;
+
     return NextResponse.json({
       success: true,
       analysis: savedAnalysis,
       siblingAnalyses,
       quantityGroupDetected: !!quantityGroups,
+      costSummary: costSummary ? {
+        estimatedCost: costSummary.totalCost,
+        legacyCost: costSummary.legacyCostEstimate,
+        savings: costSummary.savings,
+        savingsPercent: costSummary.savingsPercent,
+        byStep: costSummary.byStep,
+        byProvider: costSummary.byProvider,
+      } : null,
     });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';

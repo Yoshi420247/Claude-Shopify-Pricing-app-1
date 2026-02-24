@@ -1,10 +1,13 @@
-// Core AI pricing analysis pipeline using GPT-5.2 or Claude with reasoning
-// Handles: product identification → competitor search → AI pricing → deliberation
-// Enhanced with expert-level pricing strategies for optimal results
+// Core AI pricing analysis pipeline with SMART MODEL ROUTING
+// Uses the cheapest capable model for each step:
+//   identify → GPT-4.1 nano | visual → Gemini 2.5 Flash | search → Gemini Google Search
+//   analyze → GPT-4.1 mini  | deliberate → GPT-4.1 mini | reflect → GPT-4.1 nano
+//
+// Cost per product: ~$0.01-0.03 (down from ~$0.10-0.25 with GPT-5.2 for everything)
 
-import { chatCompletion, parseAIJson } from './openai';
-import { claudeChatCompletion, searchCompetitorsClaude, searchCompetitorsClaudeAmazon } from './claude';
-import { geminiChatCompletion, searchCompetitorsGemini, searchCompetitorsGeminiAmazon } from './gemini';
+import { parseAIJson } from './openai';
+import { searchCompetitorsClaude, searchCompetitorsClaudeAmazon } from './claude';
+import { searchCompetitorsGemini, searchCompetitorsGeminiAmazon, analyzeProductImage, type VisualAnalysisResult } from './gemini';
 import { searchCompetitors, type CompetitorSearchResult } from './competitors';
 import { searchCompetitorsOpenAI, searchCompetitorsAmazon } from './openai-search';
 import { createServerClient } from './supabase';
@@ -14,8 +17,10 @@ import {
   isOilSlickVendor,
   isWYNVendor,
 } from './local-competitor-data';
+import { getModelForStep, getSearchMode as getRouterSearchMode, type RouterOptions, type PipelineStep } from './model-router';
+import { CostTracker, estimateMessageTokens, estimateTokens } from './cost-tracker';
 
-export type SearchMode = 'brave' | 'openai' | 'amazon' | 'none';
+export type SearchMode = 'brave' | 'openai' | 'amazon' | 'none' | 'gemini';
 export type Provider = 'openai' | 'claude' | 'gemini';
 
 // ============================================================================
@@ -92,25 +97,9 @@ export function detectPackSize(title: string, variantTitle?: string): PackInfo {
   return { packSize: 1, isMultiPack: false, packLabel: '' };
 }
 
-/** Get the appropriate chat completion function for the provider */
-function getCompletionFn(provider: Provider) {
-  if (provider === 'claude') return claudeChatCompletion;
-  if (provider === 'gemini') return geminiChatCompletion;
-  return chatCompletion;
-}
-
-/** Get the default model for the provider */
-function getDefaultModel(provider: Provider): string {
-  if (provider === 'claude') return 'claude-sonnet-4-5-20250929';
-  if (provider === 'gemini') return 'gemini-2.5-flash';
-  return 'gpt-5.2';
-}
-
-/** Get the cheap/fast model for the provider */
-function getFastModel(provider: Provider): string {
-  if (provider === 'claude') return 'claude-haiku-4-5-20251001';
-  if (provider === 'gemini') return 'gemini-2.0-flash';
-  return 'gpt-4o-mini';
+/** Get model + completion function for a pipeline step using smart routing */
+function getStepModel(step: PipelineStep, routerOptions: RouterOptions) {
+  return getModelForStep(step, routerOptions);
 }
 
 // In-memory product identity cache — reuse across variants of the same product
@@ -137,7 +126,8 @@ export async function identifyProduct(
   product: Product,
   variant: Variant,
   model: string,
-  provider: Provider = 'openai'
+  provider: Provider = 'openai',
+  costTracker?: CostTracker,
 ): Promise<ProductIdentity> {
   const descText = product.description
     || (product.description_html || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -203,17 +193,30 @@ Respond in JSON:
   "notes": "relevant observations or null"
 }`;
 
-  const complete = getCompletionFn(provider);
-  const raw = await complete({
+  // Use provided model/provider or resolve via router
+  const completionFn = getModelForStep('identify', { forcedProvider: provider }).completionFn;
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userContent as never },
+  ];
+  const raw = await completionFn({
     model,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userContent as never },
-    ],
+    messages,
     maxTokens: 1200,
     jsonMode: true,
-    reasoningEffort: 'medium', // Product categorization is straightforward — save on thinking tokens
+    reasoningEffort: 'medium',
   });
+
+  // Track cost
+  if (costTracker) {
+    costTracker.add({
+      step: 'identify',
+      provider,
+      model,
+      estimatedInputTokens: estimateMessageTokens(messages as Array<{ content: string | unknown[] }>),
+      estimatedOutputTokens: estimateTokens(raw),
+    });
+  }
 
   return parseAIJson<ProductIdentity>(raw);
 }
@@ -228,7 +231,9 @@ export async function analyzePricing(
   identity: ProductIdentity,
   settings: Settings,
   model: string,
-  provider: Provider = 'openai'
+  provider: Provider = 'openai',
+  costTracker?: CostTracker,
+  visualAnalysis?: VisualAnalysisResult | null,
 ): Promise<AnalysisResult> {
   const cost = variant.cost || 0;
   const currentPrice = variant.price;
@@ -483,20 +488,48 @@ STRATEGIC QUESTIONS TO CONSIDER:
 3. Are there pricing psychology opportunities being missed?
 4. What's the profit-maximizing price within constraints?
 5. What risks exist at the suggested price point?
+${visualAnalysis ? `
+AI VISUAL ANALYSIS (from Gemini 2.5 Flash image inspection):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Visual Quality Tier: ${visualAnalysis.qualityTier.toUpperCase()} (score: ${visualAnalysis.qualityScore}/10)
+- Materials: ${visualAnalysis.materialAnalysis}
+- Craftsmanship: ${visualAnalysis.craftsmanshipNotes}
+- Brand Signals: ${visualAnalysis.brandIndicators.length > 0 ? visualAnalysis.brandIndicators.join(', ') : 'None detected'}
+- Size Estimate: ${visualAnalysis.sizeEstimate}
+- Presentation: ${visualAnalysis.conditionNotes}
+- Pricing Signals: ${visualAnalysis.pricingSignals.join(', ')}
+${visualAnalysis.suggestedPriceRange ? `- Visual Price Range: $${visualAnalysis.suggestedPriceRange.low.toFixed(2)} - $${visualAnalysis.suggestedPriceRange.high.toFixed(2)}` : ''}
+- Visual Confidence: ${visualAnalysis.confidence}
+
+IMPORTANT: Use the visual analysis to VALIDATE or ADJUST the quality tier and pricing.
+If the visual analysis disagrees with the text-based identity (e.g., image shows heady glass
+but text says import), trust the visual analysis — images don't lie.` : ''}
 
 Provide your expert analysis and final price recommendation.`;
 
-  const complete = getCompletionFn(provider);
-  const raw = await complete({
+  const completionFn = getModelForStep('analyze', { forcedProvider: provider }).completionFn;
+  const analyzeMessages = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt },
+  ];
+  const raw = await completionFn({
     model,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
-    ],
+    messages: analyzeMessages,
     maxTokens: 4000,
     jsonMode: true,
     reasoningEffort: 'high',
   });
+
+  // Track cost
+  if (costTracker) {
+    costTracker.add({
+      step: 'analyze',
+      provider,
+      model,
+      estimatedInputTokens: estimateMessageTokens(analyzeMessages as Array<{ content: string | unknown[] }>),
+      estimatedOutputTokens: estimateTokens(raw),
+    });
+  }
 
   const result = parseAIJson<AnalysisResult>(raw);
 
@@ -533,6 +566,7 @@ export async function deliberatePricing(
   model: string,
   provider: Provider = 'openai',
   packInfo?: PackInfo,
+  costTracker?: CostTracker,
 ): Promise<DeliberationResult> {
   const cost = variant.cost || 0;
   const currentPrice = variant.price;
@@ -676,20 +710,32 @@ Respond in JSON:
     });
   }
 
-  const complete = getCompletionFn(provider);
-  const raw = await complete({
+  const completionFn = getModelForStep('deliberate', { forcedProvider: provider }).completionFn;
+  const deliberateMessages = [
+    {
+      role: 'system',
+      content: `You are a MASTER PRICING STRATEGIST specializing in specialty retail. You have 20+ years of experience pricing products in niche markets. You NEVER say "I cannot determine a price" - you always provide a concrete, justified recommendation based on available signals. Use visual analysis, cost data, category knowledge, brand signals, and business logic to determine optimal pricing.`,
+    },
+    { role: 'user', content: messageContent as never },
+  ];
+  const raw = await completionFn({
     model,
-    messages: [
-      {
-        role: 'system',
-        content: `You are a MASTER PRICING STRATEGIST specializing in specialty retail. You have 20+ years of experience pricing products in niche markets. You NEVER say "I cannot determine a price" - you always provide a concrete, justified recommendation based on available signals. Use visual analysis, cost data, category knowledge, brand signals, and business logic to determine optimal pricing.`,
-      },
-      { role: 'user', content: messageContent as never },
-    ],
+    messages: deliberateMessages,
     maxTokens: 3000,
     jsonMode: true,
-    reasoningEffort: 'xhigh', // Maximum reasoning for deep deliberation
+    reasoningEffort: 'xhigh',
   });
+
+  // Track cost
+  if (costTracker) {
+    costTracker.add({
+      step: 'deliberate',
+      provider,
+      model,
+      estimatedInputTokens: estimateMessageTokens(deliberateMessages as Array<{ content: string | unknown[] }>),
+      estimatedOutputTokens: estimateTokens(raw),
+    });
+  }
 
   return parseAIJson<DeliberationResult>(raw);
 }
@@ -702,7 +748,8 @@ async function reflectAndRetry(
   identity: ProductIdentity,
   failedQueries: string[],
   model: string,
-  provider: Provider = 'openai'
+  provider: Provider = 'openai',
+  costTracker?: CostTracker,
 ): Promise<string[]> {
   const descText = (product.description || '').substring(0, 300);
 
@@ -727,17 +774,29 @@ Respond in JSON:
 { "newQueries": ["q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8"] }`;
 
   try {
-    const complete = getCompletionFn(provider);
-    const raw = await complete({
+    const completionFn = getModelForStep('reflect', { forcedProvider: provider }).completionFn;
+    const reflectMessages = [
+      { role: 'system', content: 'Generate effective search queries for e-commerce product pricing research.' },
+      { role: 'user', content: prompt },
+    ];
+    const raw = await completionFn({
       model,
-      messages: [
-        { role: 'system', content: 'Generate effective search queries for e-commerce product pricing research.' },
-        { role: 'user', content: prompt },
-      ],
+      messages: reflectMessages,
       maxTokens: 500,
       jsonMode: true,
       reasoningEffort: 'medium',
     });
+
+    // Track cost
+    if (costTracker) {
+      costTracker.add({
+        step: 'reflect',
+        provider,
+        model,
+        estimatedInputTokens: estimateMessageTokens(reflectMessages as Array<{ content: string | unknown[] }>),
+        estimatedOutputTokens: estimateTokens(raw),
+      });
+    }
 
     const result = parseAIJson<{ newQueries: string[] }>(raw);
     return result.newQueries || [];
@@ -754,10 +813,10 @@ export async function runFullAnalysis(
   variant: Variant,
   settings: Settings,
   onProgress?: (step: string) => void,
-  searchMode: SearchMode = 'brave',
+  searchMode: SearchMode = 'gemini',
   provider: Provider = 'openai',
   fast: boolean = false,
-  knownPackSize?: number,  // Pass from volume-aware analysis when pack size is known
+  knownPackSize?: number,
 ): Promise<{
   suggestedPrice: number | null;
   confidence: string | null;
@@ -773,12 +832,22 @@ export async function runFullAnalysis(
   wasDeliberated: boolean;
   wasReflectionRetried: boolean;
   error: string | null;
+  costSummary?: import('./cost-tracker').CostSummary;
 }> {
-  // Fast mode: use cheapest models, skip reflection + deliberation
-  const model = fast
-    ? getFastModel(provider)
-    : (provider === 'claude' ? getDefaultModel('claude') : provider === 'gemini' ? getDefaultModel('gemini') : (settings.openai_model || 'gpt-5.2'));
-  const reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'xhigh' = fast ? 'low' : 'high';
+  // Smart model routing: each step gets the cheapest capable model
+  const routerOptions: RouterOptions = {
+    forcedProvider: provider === 'openai' ? null : provider,  // null = smart routing (mix providers)
+    fast,
+  };
+
+  // Resolve models for each step via router
+  const identifyModel = getStepModel('identify', routerOptions);
+  const analyzeModel = getStepModel('analyze', routerOptions);
+  const deliberateModel = getStepModel('deliberate', routerOptions);
+  const reflectModel = getStepModel('reflect', routerOptions);
+
+  // Per-analysis cost tracker
+  const costTracker = new CostTracker();
 
   try {
     // Step 1: Identify product (cached per product — all variants share identity)
@@ -788,9 +857,41 @@ export async function runFullAnalysis(
       onProgress?.('Using cached product identity...');
       identity = cached;
     } else {
-      onProgress?.(`Identifying product (${fast ? 'fast' : provider})...`);
-      identity = await identifyProduct(product, variant, model, provider);
+      onProgress?.(`Identifying product (${identifyModel.model})...`);
+      identity = await identifyProduct(product, variant, identifyModel.model, identifyModel.provider, costTracker);
       identityCache.set(product.id, identity);
+    }
+
+    // Step 1b: Visual analysis with Gemini 2.5 Flash (if image available)
+    // This runs in parallel-ish with search — adds ~$0.003 per product but
+    // significantly improves quality tier detection and pricing accuracy.
+    let visualAnalysis: VisualAnalysisResult | null = null;
+    if (product.image_url) {
+      onProgress?.('Analyzing product image (Gemini 2.5 Flash)...');
+      visualAnalysis = await analyzeProductImage(
+        product.image_url,
+        product.title,
+        product.product_type,
+        product.vendor,
+      );
+
+      if (visualAnalysis) {
+        // Track visual analysis cost
+        costTracker.add({
+          step: 'visual',
+          provider: 'gemini',
+          model: 'gemini-2.5-flash',
+          estimatedInputTokens: 1200,  // prompt + image (~765 tokens)
+          estimatedOutputTokens: 600,
+        });
+
+        // If visual analysis disagrees with text-based identity on quality tier,
+        // log it and let the pricing AI resolve the conflict
+        if (visualAnalysis.qualityTier !== 'unknown' &&
+            visualAnalysis.qualityTier !== identity.originTier) {
+          onProgress?.(`Visual analysis suggests ${visualAnalysis.qualityTier.toUpperCase()} (text says ${identity.originTier.toUpperCase()}) — AI will resolve`);
+        }
+      }
     }
 
     // Step 2: Search competitors
@@ -825,6 +926,8 @@ Report whether each price is per-unit or per-pack in the title field.`;
     }
 
     // 2b: Run web search (with priority domains injected into prompts)
+    // Default is now 'gemini' (Google Search grounding — free 500/day, cheapest)
+    let searchProvider: string = searchMode;
     if (searchMode === 'none') {
       onProgress?.('Skipping competitor search...');
       competitorData = { competitors: [], rawResults: [], excluded: [], queries: [] };
@@ -832,28 +935,61 @@ Report whether each price is per-unit or per-pack in the title field.`;
       if (provider === 'claude') {
         onProgress?.('Searching Amazon (Claude web search)...');
         competitorData = await searchCompetitorsClaudeAmazon(productSearch, identity, prioritySearchInstruction);
-      } else if (provider === 'gemini') {
+        searchProvider = 'claude';
+      } else if (provider === 'gemini' || searchMode === 'amazon') {
         onProgress?.('Searching Amazon (Gemini Google Search)...');
         competitorData = await searchCompetitorsGeminiAmazon(productSearch, identity, prioritySearchInstruction);
+        searchProvider = 'gemini';
       } else {
         onProgress?.('Searching Amazon (OpenAI web search)...');
         competitorData = await searchCompetitorsAmazon(productSearch, identity, prioritySearchInstruction);
+        searchProvider = 'openai';
       }
     } else if (searchMode === 'brave') {
       onProgress?.('Searching competitors (Brave)...');
       competitorData = await searchCompetitors(productSearch, identity, 3, prioritySearchInstruction);
+      searchProvider = 'brave';
+    } else if (searchMode === 'gemini') {
+      // Gemini Google Search grounding — cheapest option (free 500/day)
+      onProgress?.('Searching competitors (Gemini Google Search — free tier)...');
+      competitorData = await searchCompetitorsGemini(productSearch, identity, prioritySearchInstruction);
+      searchProvider = 'gemini';
+    } else if (searchMode === 'openai') {
+      onProgress?.('Searching competitors (OpenAI web search)...');
+      competitorData = await searchCompetitorsOpenAI(productSearch, identity, prioritySearchInstruction);
+      searchProvider = 'openai';
     } else {
-      // searchMode === 'openai' (default) — route to provider's web search
+      // Route to provider's native search
       if (provider === 'claude') {
         onProgress?.('Searching competitors (Claude web search)...');
         competitorData = await searchCompetitorsClaude(productSearch, identity, prioritySearchInstruction);
-      } else if (provider === 'gemini') {
+        searchProvider = 'claude';
+      } else {
         onProgress?.('Searching competitors (Gemini Google Search)...');
         competitorData = await searchCompetitorsGemini(productSearch, identity, prioritySearchInstruction);
-      } else {
-        onProgress?.('Searching competitors (OpenAI web search)...');
-        competitorData = await searchCompetitorsOpenAI(productSearch, identity, prioritySearchInstruction);
+        searchProvider = 'gemini';
       }
+    }
+
+    // Track search cost
+    if (searchMode !== 'none') {
+      const searchModel = searchProvider === 'gemini' ? 'gemini-2.5-flash'
+        : searchProvider === 'claude' ? 'claude-sonnet-4-5-20250929'
+        : searchProvider === 'openai' ? 'gpt-4.1-mini'
+        : 'brave-search';
+      const searchType = searchProvider === 'gemini' ? 'gemini-google-search-free'
+        : searchProvider === 'claude' ? 'claude-web-search'
+        : searchProvider === 'openai' ? 'openai-web-search'
+        : 'brave-search';
+      costTracker.add({
+        step: 'search',
+        provider: searchProvider,
+        model: searchModel,
+        estimatedInputTokens: 800,
+        estimatedOutputTokens: 1500,
+        searchCalls: 1,
+        searchType,
+      });
     }
 
     // 2c: Merge local benchmarks INTO competitor data (prepend — highest confidence)
@@ -905,9 +1041,9 @@ Report whether each price is per-unit or per-pack in the title field.`;
       onProgress?.(`Pack-size check: ${packInfoForSearch.packLabel} detected, ${filteredCompetitors.length} plausible competitor prices`);
     }
 
-    // Step 3: AI pricing analysis
-    onProgress?.(`Analyzing pricing (${fast ? 'fast' : provider})...`);
-    let analysis = await analyzePricing(product, variant, competitorData, identity, settings, model, provider);
+    // Step 3: AI pricing analysis (with visual analysis injected)
+    onProgress?.(`Analyzing pricing (${analyzeModel.model})...`);
+    let analysis = await analyzePricing(product, variant, competitorData, identity, settings, analyzeModel.model, analyzeModel.provider, costTracker, visualAnalysis);
 
     let wasDeliberated = false;
     let wasReflectionRetried = false;
@@ -919,28 +1055,21 @@ Report whether each price is per-unit or per-pack in the title field.`;
       const hasLowConfidence = analysis.confidence === 'low';
 
       if (hasInsufficientData && searchMode !== 'none' && competitorData.queries.length > 0) {
-        onProgress?.('AI reflection on search strategy...');
-        const newQueries = await reflectAndRetry(product, identity, competitorData.queries, model, provider);
+        onProgress?.(`AI reflection on search strategy (${reflectModel.model})...`);
+        const newQueries = await reflectAndRetry(product, identity, competitorData.queries, reflectModel.model, reflectModel.provider, costTracker);
 
         if (newQueries.length > 0) {
           onProgress?.('Retrying with AI-suggested searches...');
           let retryData: CompetitorSearchResult;
           const retryIdentity = { ...identity, searchQueries: newQueries };
           if (searchMode === 'amazon') {
-            retryData = provider === 'claude'
-              ? await searchCompetitorsClaudeAmazon(productSearch, retryIdentity)
-              : provider === 'gemini'
-              ? await searchCompetitorsGeminiAmazon(productSearch, retryIdentity)
-              : await searchCompetitorsAmazon(productSearch, retryIdentity);
+            retryData = await searchCompetitorsGeminiAmazon(productSearch, retryIdentity);
           } else if (searchMode === 'brave') {
             const { searchCompetitors: sc } = await import('./competitors');
             retryData = await sc(productSearch, retryIdentity, 1);
           } else {
-            retryData = provider === 'claude'
-              ? await searchCompetitorsClaude(productSearch, retryIdentity)
-              : provider === 'gemini'
-              ? await searchCompetitorsGemini(productSearch, retryIdentity)
-              : await searchCompetitorsOpenAI(productSearch, retryIdentity);
+            // Default retry uses Gemini Google Search (cheapest)
+            retryData = await searchCompetitorsGemini(productSearch, retryIdentity);
           }
 
           // Merge new results
@@ -953,7 +1082,7 @@ Report whether each price is per-unit or per-pack in the title field.`;
 
           if (retryData.competitors.length > 0) {
             onProgress?.('Re-analyzing with new data...');
-            const reanalysis = await analyzePricing(product, variant, competitorData, identity, settings, model, provider);
+            const reanalysis = await analyzePricing(product, variant, competitorData, identity, settings, analyzeModel.model, analyzeModel.provider, costTracker, visualAnalysis);
             if ((reanalysis.competitorAnalysis?.retailCount || 0) > (analysis.competitorAnalysis?.retailCount || 0)) {
               analysis = reanalysis;
               wasReflectionRetried = true;
@@ -964,8 +1093,8 @@ Report whether each price is per-unit or per-pack in the title field.`;
 
       // Step 5: Deep deliberation if still uncertain
       if (hasInsufficientData || hasLowConfidence || !analysis.suggestedPrice) {
-        onProgress?.('Deep deliberation...');
-        const deliberation = await deliberatePricing(product, variant, analysis, identity, settings, model, provider, packInfoForSearch);
+        onProgress?.(`Deep deliberation (${deliberateModel.model})...`);
+        const deliberation = await deliberatePricing(product, variant, analysis, identity, settings, deliberateModel.model, deliberateModel.provider, packInfoForSearch, costTracker);
         if (deliberation.deliberatedPrice) {
           analysis.suggestedPrice = deliberation.deliberatedPrice;
           analysis.confidence = deliberation.confidence;
@@ -1002,6 +1131,9 @@ Report whether each price is per-unit or per-pack in the title field.`;
       }
     }
 
+    // Generate cost summary
+    const costSummary = costTracker.getSummary();
+
     return {
       suggestedPrice: analysis.suggestedPrice,
       confidence: analysis.confidence,
@@ -1017,6 +1149,7 @@ Report whether each price is per-unit or per-pack in the title field.`;
       wasDeliberated,
       wasReflectionRetried,
       error: null,
+      costSummary,
     };
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown analysis error';
@@ -1036,6 +1169,7 @@ Report whether each price is per-unit or per-pack in the title field.`;
       wasDeliberated: false,
       wasReflectionRetried: false,
       error: message,
+      costSummary: costTracker.getSummary(),
     };
   }
 }

@@ -575,6 +575,130 @@ Format your response as JSON:
   }
 }
 
+// ---------------------------------------------------------------------------
+// Visual Product Analysis — uses Gemini 2.5 Flash for cost-effective vision
+// ---------------------------------------------------------------------------
+// Gemini 2.5 Flash has excellent vision capabilities at $0.30/$2.50 per MTok,
+// making it ~5x cheaper than GPT-4.1 mini for image analysis and ~47x cheaper
+// than GPT-5.2. This function extracts pricing-relevant visual signals.
+
+export interface VisualAnalysisResult {
+  qualityTier: 'import' | 'domestic' | 'heady' | 'unknown';
+  qualityScore: number;              // 1-10 scale
+  materialAnalysis: string;          // Glass thickness, material type, etc.
+  craftsmanshipNotes: string;        // Seams, symmetry, finish quality
+  brandIndicators: string[];         // Logos, signatures, artist marks
+  sizeEstimate: string;              // Estimated physical dimensions
+  conditionNotes: string;            // Packaging quality, presentation
+  pricingSignals: string[];          // Visual cues that affect pricing
+  suggestedPriceRange: { low: number; high: number } | null;
+  confidence: 'high' | 'medium' | 'low';
+}
+
+/**
+ * Analyze a product image using Gemini 2.5 Flash vision.
+ * Returns structured visual analysis with pricing-relevant signals.
+ *
+ * Cost: ~$0.002-0.005 per image (much cheaper than using GPT-5.2)
+ */
+export async function analyzeProductImage(
+  imageUrl: string,
+  productTitle: string,
+  productType: string | null,
+  vendor: string | null,
+): Promise<VisualAnalysisResult | null> {
+  try {
+    const key = getGeminiKey();
+
+    // Fetch and encode the image
+    let url = imageUrl;
+    if (url.startsWith('//')) url = 'https:' + url;
+    url = url.replace(/_\d+x\d*\./, '.'); // Get full-size image
+
+    const imageData = await fetchImageAsBase64(url);
+    if (!imageData) {
+      console.log(`[gemini-visual] Failed to fetch image: ${url.substring(0, 80)}`);
+      return null;
+    }
+
+    const prompt = `You are an expert product appraiser for a smoke shop / headshop. Analyze this product image and provide a detailed visual assessment for pricing purposes.
+
+PRODUCT: ${productTitle}
+TYPE: ${productType || 'Unknown'}
+VENDOR: ${vendor || 'Unknown'}
+
+Analyze the image for:
+1. QUALITY TIER: Is this import (mass-produced China), domestic (USA-made quality), or heady (handmade art/artisan)?
+2. MATERIAL: What material is it? (glass, silicone, metal, paper, plastic, etc.) Assess thickness, clarity, quality.
+3. CRAFTSMANSHIP: Look for seams, symmetry, finish quality, imperfections, hand-blown indicators.
+4. BRAND SIGNALS: Any visible logos, artist signatures, brand markings, certificates?
+5. SIZE: Estimate physical dimensions from visual cues.
+6. PRESENTATION: How is it packaged/displayed? Premium packaging suggests higher value.
+7. PRICING SIGNALS: Any visual cues that affect price (color work, fuming, millies, recyclers, unique shapes)?
+
+Respond in JSON:
+{
+  "qualityTier": "import" | "domestic" | "heady" | "unknown",
+  "qualityScore": 1-10,
+  "materialAnalysis": "detailed material assessment",
+  "craftsmanshipNotes": "craftsmanship observations",
+  "brandIndicators": ["indicator1", "indicator2"],
+  "sizeEstimate": "estimated dimensions",
+  "conditionNotes": "packaging and presentation notes",
+  "pricingSignals": ["signal1", "signal2"],
+  "suggestedPriceRange": {"low": number, "high": number} or null,
+  "confidence": "high" | "medium" | "low"
+}`;
+
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`;
+
+    const res = await geminiRateLimiter.execute(async () => {
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            role: 'user',
+            parts: [
+              { text: prompt },
+              { inlineData: imageData },
+            ],
+          }],
+          generationConfig: {
+            maxOutputTokens: 1500,
+            responseMimeType: 'application/json',
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}` } }));
+        throw new Error(err.error?.message || `Gemini visual error: ${response.status}`);
+      }
+
+      return response.json();
+    }, 2);
+
+    // Extract text from response
+    let text = '';
+    if (res.candidates?.[0]?.content?.parts) {
+      for (const part of res.candidates[0].content.parts) {
+        if (part.thought) continue;
+        if (part.text) text += part.text;
+      }
+    }
+
+    if (!text) return null;
+
+    const parsed = parseAIJson<VisualAnalysisResult>(text);
+    return parsed;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'Unknown error';
+    console.error(`[gemini-visual] Image analysis failed for "${productTitle}": ${msg}`);
+    return null;
+  }
+}
+
 // Test Gemini connection
 export async function testGeminiConnection(): Promise<{ success: boolean; error?: string }> {
   try {

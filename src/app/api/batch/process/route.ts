@@ -231,7 +231,7 @@ export async function POST(req: NextRequest) {
       max_decrease: 20,
       rounding_style: 'psychological',
       respect_msrp: true,
-      openai_model: 'gpt-5.2',
+      openai_model: 'gpt-4.1-mini',
       product_niche: 'smoke shop, heady glass, dab tools',
     };
 
