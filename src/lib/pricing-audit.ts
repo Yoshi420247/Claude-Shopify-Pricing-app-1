@@ -414,7 +414,31 @@ function detectVolumeCurveViolations(
 }
 
 /**
+ * Tiered cost multiplier: WC wholesale → Shopify unit cost.
+ *
+ * WC (WYN Distribution) is the wholesaler. Shopify cost = WC price × multiplier.
+ *   $0.00  – $5.00   → 2.0×
+ *   $5.01  – $200.00  → 1.5×
+ *   $200.01+           → 1.4×
+ */
+export function getWCCostMultiplier(wcPrice: number): number {
+  if (wcPrice <= 5) return 2.0;
+  if (wcPrice <= 200) return 1.5;
+  return 1.4;
+}
+
+/**
+ * Calculate expected Shopify cost from WC wholesale price using tiered multiplier.
+ */
+export function expectedShopifyCost(wcPrice: number): number {
+  return Math.round(wcPrice * getWCCostMultiplier(wcPrice) * 100) / 100;
+}
+
+/**
  * Detect cost mismatches between Shopify and WooCommerce.
+ *
+ * Shopify cost should equal WC wholesale × tiered multiplier (2.0×/1.5×/1.4×).
+ * Only flags when the actual Shopify cost deviates from the expected tiered cost.
  */
 function detectCostMismatch(
   product: Product,
@@ -426,20 +450,23 @@ function detectCostMismatch(
 
   if (!wcPrice || wcPrice <= 0) return [];
 
+  const multiplier = getWCCostMultiplier(wcPrice);
+  const expectedCost = expectedShopifyCost(wcPrice);
+
   for (const v of variants) {
     if (v.cost === null || v.cost === undefined) continue;
 
-    const diff = Math.abs(v.cost - wcPrice);
-    const pctDiff = (diff / wcPrice) * 100;
+    const diff = Math.abs(v.cost - expectedCost);
+    const pctDiff = expectedCost > 0 ? (diff / expectedCost) * 100 : 0;
 
-    // Flag if >10% difference or absolute diff >$5
-    if (pctDiff > 10 || diff > 5) {
+    // Flag if >15% difference from expected tiered cost or absolute diff >$5
+    if (pctDiff > 15 || diff > 5) {
       issues.push({
         type: 'cost_mismatch',
         severity: 'warning',
         productId: product.id,
         productTitle: product.title,
-        details: `Variant "${v.title}" Shopify cost $${v.cost.toFixed(2)} vs WC wholesale $${wcPrice.toFixed(2)} (${pctDiff.toFixed(0)}% diff). WC product: "${wcProduct.name}".`,
+        details: `Variant "${v.title}" Shopify cost $${v.cost.toFixed(2)} vs expected $${expectedCost.toFixed(2)} (WC $${wcPrice.toFixed(2)} × ${multiplier}×). ${pctDiff.toFixed(0)}% off. WC: "${wcProduct.name}".`,
         affectedVariants: [{
           variantId: v.id,
           variantTitle: v.title || 'Default',
@@ -452,8 +479,8 @@ function detectCostMismatch(
           variantTitle: v.title || 'Default',
           field: 'cost',
           currentValue: v.cost,
-          suggestedValue: wcPrice,
-          reason: `WooCommerce wholesale price is $${wcPrice.toFixed(2)} but Shopify cost is $${v.cost.toFixed(2)}.`,
+          suggestedValue: expectedCost,
+          reason: `WC wholesale $${wcPrice.toFixed(2)} × ${multiplier}× = $${expectedCost.toFixed(2)} expected, but Shopify cost is $${v.cost.toFixed(2)}.`,
         }],
       });
       break; // One cost mismatch per product is enough
