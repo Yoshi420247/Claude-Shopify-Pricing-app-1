@@ -269,6 +269,27 @@ async function main() {
     results.push(result);
   }
 
+  // Debug: show WC matching details
+  if (wcLookup) {
+    const matched = results.filter(r => r.wcMatch);
+    const unmatched = results.filter(r => !r.wcMatch);
+    if (unmatched.length > 0) {
+      console.log('');
+      console.log('  WC Matching Debug:');
+      console.log(`    Matched: ${matched.length}, Unmatched: ${unmatched.length}`);
+      console.log('    Unmatched Shopify products:');
+      for (const r of unmatched.slice(0, 5)) {
+        const sku = r.variants[0]?.sku || '(no sku)';
+        console.log(`      - "${r.productTitle}" [SKU: ${sku}]`);
+      }
+      console.log('    Sample WC product names (first 5):');
+      const sampleWC = Array.from(wcLookup.byName.keys()).slice(0, 5);
+      for (const name of sampleWC) {
+        console.log(`      - "${name}"`);
+      }
+    }
+  }
+
   // ── Stage 4: Build summary ───────────────────────────────────────────────
   log('Stage 4: Building summary...');
 

@@ -202,6 +202,32 @@ export function findWCMatch(
     }
   }
 
+  // Try token-overlap matching: if ≥60% of words overlap, consider it a match
+  const shopifyTokens = new Set(normalizedTitle.split(' ').filter(t => t.length > 2));
+  if (shopifyTokens.size >= 2) {
+    let bestMatch: { product: WCProduct; score: number } | null = null;
+
+    for (const [wcName, wcProduct] of wcLookup.byName) {
+      const wcTokens = new Set(wcName.split(' ').filter(t => t.length > 2));
+      if (wcTokens.size < 2) continue;
+
+      // Count overlapping tokens
+      let overlap = 0;
+      for (const token of shopifyTokens) {
+        if (wcTokens.has(token)) overlap++;
+      }
+
+      const minSize = Math.min(shopifyTokens.size, wcTokens.size);
+      const score = overlap / minSize;
+
+      if (score >= 0.6 && overlap >= 2 && (!bestMatch || score > bestMatch.score)) {
+        bestMatch = { product: wcProduct, score };
+      }
+    }
+
+    if (bestMatch) return bestMatch.product;
+  }
+
   return null;
 }
 
