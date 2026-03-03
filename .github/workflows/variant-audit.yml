@@ -1,0 +1,98 @@
+name: Variant Pricing Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      vendor:
+        description: 'Vendor/brand name to filter (leave empty for ALL vendors)'
+        required: false
+        type: string
+        default: ''
+      status:
+        description: 'Product status filter'
+        required: true
+        type: choice
+        options:
+          - active
+          - draft
+          - all
+        default: 'active'
+      limit:
+        description: 'Max products to audit (0 = no limit)'
+        required: false
+        type: string
+        default: '0'
+      apply:
+        description: 'Apply price fixes to Shopify + Supabase (default: dry-run only)'
+        required: true
+        type: boolean
+        default: false
+      ai:
+        description: 'Enable AI rationality checks via Gemini (~$0.01/product)'
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  audit:
+    name: Run Variant Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run variant pricing audit
+        env:
+          SHOPIFY_STORE_NAME: ${{ secrets.SHOPIFY_STORE_NAME }}
+          SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          WC_STORE_URL: ${{ secrets.WC_STORE_URL }}
+          WC_CONSUMER_KEY: ${{ secrets.WC_CONSUMER_KEY }}
+          WC_CONSUMER_SECRET: ${{ secrets.WC_CONSUMER_SECRET }}
+        run: |
+          ARGS="--status ${{ inputs.status }}"
+
+          if [ -n "${{ inputs.vendor }}" ]; then
+            ARGS="$ARGS --vendor \"${{ inputs.vendor }}\""
+          fi
+
+          if [ "${{ inputs.limit }}" != "0" ] && [ -n "${{ inputs.limit }}" ]; then
+            ARGS="$ARGS --limit ${{ inputs.limit }}"
+          fi
+
+          if [ "${{ inputs.apply }}" = "true" ]; then
+            ARGS="$ARGS --apply"
+          fi
+
+          if [ "${{ inputs.ai }}" = "true" ]; then
+            ARGS="$ARGS --ai"
+          fi
+
+          # Always save report as artifact
+          mkdir -p reports
+          ARGS="$ARGS --output reports/variant-audit-$(date +%Y-%m-%d-%H-%M-%S).json"
+
+          echo "Running: npx tsx --tsconfig tsconfig.scripts.json scripts/variant-pricing-audit.ts $ARGS"
+          eval npx tsx --tsconfig tsconfig.scripts.json scripts/variant-pricing-audit.ts $ARGS
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: variant-audit-report
+          path: reports/variant-audit-*.json
+          if-no-files-found: ignore
+          retention-days: 30
