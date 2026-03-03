@@ -422,7 +422,7 @@ function detectVolumeCurveViolations(
  *   $200.01+           → 1.4×
  */
 export function getWCCostMultiplier(wcPrice: number): number {
-  if (wcPrice <= 5) return 2.0;
+  if (wcPrice < 5) return 2.0;
   if (wcPrice <= 200) return 1.5;
   return 1.4;
 }
