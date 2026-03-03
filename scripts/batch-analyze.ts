@@ -607,14 +607,32 @@ async function main() {
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
   );
 
-  // Load settings
-  const { data: settingsRow, error: settingsErr } = await db
-    .from('settings')
-    .select('*')
-    .single();
+  // Load settings (with retry logic for transient network failures)
+  let settingsRow: Record<string, unknown> | null = null;
+  const MAX_RETRIES = 3;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const { data, error: settingsErr } = await db
+      .from('settings')
+      .select('*')
+      .single();
 
-  if (settingsErr) {
-    logError(`Failed to load settings: ${settingsErr.message}`);
+    if (!settingsErr) {
+      settingsRow = data;
+      break;
+    }
+
+    if (attempt < MAX_RETRIES) {
+      const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
+      log(`Settings fetch failed (attempt ${attempt}/${MAX_RETRIES}): ${settingsErr.message}. Retrying in ${delay}ms...`);
+      await new Promise(r => setTimeout(r, delay));
+    } else {
+      logError(`Failed to load settings after ${MAX_RETRIES} attempts: ${settingsErr.message}`);
+      process.exit(1);
+    }
+  }
+
+  if (!settingsRow) {
+    logError('Settings row is null after retries');
     process.exit(1);
   }
 

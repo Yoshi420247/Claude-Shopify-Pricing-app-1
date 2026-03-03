@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "next lint",
     "batch-analyze": "tsx --tsconfig tsconfig.scripts.json scripts/batch-analyze.ts",
-    "sync-oil-slick": "tsx --tsconfig tsconfig.scripts.json scripts/sync-oil-slick-pricing.ts"
+    "sync-oil-slick": "tsx --tsconfig tsconfig.scripts.json scripts/sync-oil-slick-pricing.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.47.0",
@@ -26,6 +28,7 @@
     "postcss": "^8.4.0",
     "tailwindcss": "^3.4.0",
     "tsx": "^4.21.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^4.0.18"
   }
 }
